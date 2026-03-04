@@ -2,6 +2,7 @@ import os
 import json
 import time
 import random
+import asyncio
 import tempfile
 import subprocess
 import threading
@@ -11,14 +12,17 @@ from datetime import datetime
 from dotenv import load_dotenv
 from groq import Groq
 from translate import Translator
-from elevenlabs.client import ElevenLabs
+import edge_tts
 import pygame
 
 load_dotenv()
 
 ai_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-el_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
-VOICE_ID = os.getenv("VOICE_ID", "mQ3WfN4mDLwdO9qwtfAv")
+
+# Голос edge-tts — меняй по вкусу:
+# ru-RU-SvetlanaNeural  — женский, мягкий (рекомендуется для Лоры)
+# ru-RU-DmitryNeural    — мужской
+EDGE_VOICE = os.getenv("EDGE_VOICE", "ru-RU-SvetlanaNeural")
 
 pygame.mixer.init()
 
@@ -134,8 +138,23 @@ if not os.path.exists("список дел.txt"):
 
 # ─────────────────────────── РЕЧЬ ───────────────────────────
 
-def speak(text):
-    """Озвучка в отдельном потоке с возможностью прерывания."""
+def _synthesize(text: str):
+    """Синтезирует речь через edge-tts, возвращает путь к mp3 или None."""
+    async def _run():
+        tts = edge_tts.Communicate(text, EDGE_VOICE)
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            tmp = f.name
+        await tts.save(tmp)
+        return tmp
+    try:
+        return asyncio.run(_run())
+    except Exception as e:
+        print(f"  [!] Ошибка синтеза: {e}")
+        return None
+
+
+def speak(text: str):
+    """Озвучка с возможностью прерывания через stop_speaking_event."""
     global is_speaking
     if not text:
         return
@@ -145,20 +164,10 @@ def speak(text):
         global is_speaking
         is_speaking = True
         stop_speaking_event.clear()
+        tmp = None
         try:
-            audio = el_client.text_to_speech.convert(
-                voice_id=VOICE_ID,
-                text=text,
-                model_id="eleven_multilingual_v2",
-            )
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                for chunk in audio:
-                    if stop_speaking_event.is_set():
-                        break
-                    f.write(chunk)
-                tmp = f.name
-
-            if not stop_speaking_event.is_set():
+            tmp = _synthesize(text)
+            if tmp and not stop_speaking_event.is_set():
                 pygame.mixer.music.load(tmp)
                 pygame.mixer.music.play()
                 while pygame.mixer.music.get_busy():
@@ -167,19 +176,19 @@ def speak(text):
                         break
                     pygame.time.Clock().tick(10)
                 pygame.mixer.music.unload()
-
-            try:
-                os.unlink(tmp)
-            except Exception:
-                pass
         except Exception as e:
             print(f"  [!] Ошибка речи: {e}")
         finally:
             is_speaking = False
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
 
     t = threading.Thread(target=_speak_worker, daemon=True)
     t.start()
-    t.join()  # Ждём завершения (но поток можно прервать через stop_speaking_event)
+    t.join()
 
 
 def speak_async(text):
