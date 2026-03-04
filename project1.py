@@ -613,12 +613,31 @@ def get_weather():
     city = listen()
     if not city:
         return "Не распознано"
+    api_key = os.getenv("WEATHER_API_KEY")
+    if not api_key:
+        return "Добавь WEATHER_API_KEY в .env"
     try:
         import urllib.request
-        url = f"https://wttr.in/{city.replace(' ', '+')}?format=3&lang=ru"
+        import urllib.parse
+        url = (
+            f"https://api.openweathermap.org/data/2.5/weather"
+            f"?q={urllib.parse.quote(city)}&appid={api_key}&units=metric&lang=ru"
+        )
         with urllib.request.urlopen(url, timeout=5) as r:
-            result = r.read().decode("utf-8").strip()
-        return result if result else "Не удалось получить погоду"
+            data = json.loads(r.read().decode("utf-8"))
+        desc    = data["weather"][0]["description"]
+        temp    = round(data["main"]["temp"])
+        feels   = round(data["main"]["feels_like"])
+        humid   = data["main"]["humidity"]
+        wind    = round(data["wind"]["speed"])
+        return (
+            f"В городе {city}: {desc}, {temp}°, ощущается как {feels}°, "
+            f"влажность {humid}%, ветер {wind} м/с"
+        )
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return f"Город '{city}' не найден"
+        return f"Ошибка погоды: {e}"
     except Exception as e:
         return f"Ошибка погоды: {e}"
 
