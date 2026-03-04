@@ -1,0 +1,9 @@
+groq
+edge-tts
+SpeechRecognition
+pygame
+python-dotenv
+translate
+pyaudio
+pyautogui
+pyperclip
