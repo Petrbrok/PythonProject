@@ -9,12 +9,14 @@ import threading
 import webbrowser
 import queue
 import re
+import yaml
 from datetime import datetime
 from dotenv import load_dotenv
 from groq import Groq
 from translate import Translator
 import edge_tts
 import pygame
+from fuzzywuzzy import fuzz
 
 try:
     import vosk
@@ -57,7 +59,7 @@ break_reminder_active = False
 
 # ─────────────────────────── КОНСТАНТЫ ───────────────────────────
 
-NAME_TRIGGERS = ("лора", "флора", "laura", "лёра", "лаура", "лор", "клара", "хлора", "лёра", "лара")
+NAME_TRIGGERS = ("лора", "флора", "laura", "лёра", "лаура", "лор", "клара", "хлора", "лара", "пора", "лоор", "лёра")
 
 WAKE_PHRASES  = ["Слушаю.", "Да.", "Здесь."]
 CONFIRM_PHRASES = ["Есть!", "Выполняю.", "Сделано.", "Готово.", "Принято."]
@@ -233,9 +235,24 @@ LOCAL_COMMANDS = {
     "выключи перерывы":     "break_reminder_off",
 }
 
-# ─────────────────────────── АЛГОРИТМ ЛЕВЕНШТЕЙНА ───────────────────────────
+# Загружаем дополнительные команды из commands.yaml если файл существует
+_yaml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "commands.yaml")
+if os.path.exists(_yaml_path):
+    try:
+        _yaml_cmds = yaml.safe_load(open(_yaml_path, encoding="utf-8"))
+        if _yaml_cmds:
+            for _cmd, _phrases in _yaml_cmds.items():
+                if isinstance(_phrases, list):
+                    for _phrase in _phrases:
+                        LOCAL_COMMANDS[_phrase.lower()] = _cmd
+        print(f"  [yaml] Загружено команд из commands.yaml")
+    except Exception as e:
+        print(f"  [!] Ошибка commands.yaml: {e}")
+
+# ─────────────────────────── НЕЧЁТКОЕ РАСПОЗНАВАНИЕ (fuzzywuzzy) ───────────────────────────
 
 def levenshtein(s1: str, s2: str) -> int:
+    """Оставляем для совместимости с поиском имени."""
     if len(s1) < len(s2):
         return levenshtein(s2, s1)
     if len(s2) == 0:
@@ -250,31 +267,25 @@ def levenshtein(s1: str, s2: str) -> int:
     return prev[-1]
 
 def find_local_command(query: str):
-    """Ищет команду в локальном словаре. Сначала точное совпадение, потом Левенштейн."""
+    """Ищет команду через fuzzywuzzy — как у Джарвиса."""
     q = query.lower().strip()
+    if not q:
+        return None
 
-    # 1. Точное совпадение
-    if q in LOCAL_COMMANDS:
-        return LOCAL_COMMANDS[q]
+    best_cmd    = None
+    best_score  = 0
 
-    # 2. Фраза содержит ключ
     for phrase, cmd in LOCAL_COMMANDS.items():
-        if phrase in q:
-            return cmd
-
-    # 3. Левенштейн — ищем ближайшую фразу
-    best_cmd   = None
-    best_score = 0.0
-    for phrase, cmd in LOCAL_COMMANDS.items():
-        dist  = levenshtein(q, phrase)
-        max_l = max(len(q), len(phrase))
-        score = 1 - dist / max_l
+        # комбинированный скор: ratio + partial_ratio (как в jarvis)
+        score = (fuzz.ratio(q, phrase) * 0.6 +
+                 fuzz.partial_ratio(q, phrase) * 0.4)
         if score > best_score:
             best_score = score
             best_cmd   = cmd
 
-    # Порог 0.65 — достаточно похоже
-    if best_score >= 0.65:
+    # Порог 70 как у Джарвиса
+    if best_score >= 70:
+        print(f"  [fuzzy] {best_score:.0f}% → {best_cmd}")
         return best_cmd
 
     return None
@@ -668,22 +679,51 @@ def close_browser():
             pass
     return True
 
+def _get_volume_interface():
+    try:
+        from ctypes import POINTER, cast
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        return cast(interface, POINTER(IAudioEndpointVolume))
+    except Exception:
+        return None
+
 def sound_off():
-    os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]173)")
+    vol = _get_volume_interface()
+    if vol:
+        vol.SetMute(1, None)
+    else:
+        os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]173)")
     return True
 
 def sound_on():
-    os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]173)")
+    vol = _get_volume_interface()
+    if vol:
+        vol.SetMute(0, None)
+    else:
+        os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]173)")
     return True
 
 def volume_up():
-    for _ in range(5):
-        os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]175)")
+    vol = _get_volume_interface()
+    if vol:
+        current = vol.GetMasterVolumeLevelScalar()
+        vol.SetMasterVolumeLevelScalar(min(1.0, current + 0.1), None)
+    else:
+        for _ in range(5):
+            os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]175)")
     return True
 
 def volume_down():
-    for _ in range(5):
-        os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]174)")
+    vol = _get_volume_interface()
+    if vol:
+        current = vol.GetMasterVolumeLevelScalar()
+        vol.SetMasterVolumeLevelScalar(max(0.0, current - 0.1), None)
+    else:
+        for _ in range(5):
+            os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]174)")
     return True
 
 def brightness_up():
@@ -1209,8 +1249,20 @@ def main():
         if any(w in query for w in STOP_TRIGGERS):
             break_code()
 
-        # Проверяем активацию
-        has_name  = any(name in query for name in NAME_TRIGGERS)
+        # Проверяем активацию через Левенштейн
+        def _has_name(q):
+            words = q.lower().split()
+            for word in words:
+                for name in NAME_TRIGGERS:
+                    max_l = max(len(word), len(name))
+                    if max_l == 0:
+                        continue
+                    score = 1 - levenshtein(word, name) / max_l
+                    if score >= 0.75:
+                        return True, name
+            return False, None
+
+        has_name, matched_name = _has_name(query)
         in_window = (time.time() - last_activation) < WINDOW_AFTER_AI
 
         if not has_name and not always_listen and not in_window:
@@ -1218,10 +1270,19 @@ def main():
 
         # Убираем имя из запроса
         clean = query
-        if has_name:
-            for name in NAME_TRIGGERS:
-                clean = clean.replace(name, "", 1).strip()
-            clean = clean.strip(",. ")
+        if has_name and matched_name:
+            # Убираем найденное слово которое похоже на имя
+            words = clean.split()
+            filtered = []
+            removed = False
+            for word in words:
+                max_l = max(len(word), len(matched_name))
+                score = 1 - levenshtein(word, matched_name) / max_l if max_l else 0
+                if score >= 0.75 and not removed:
+                    removed = True
+                    continue
+                filtered.append(word)
+            clean = " ".join(filtered).strip(",. ")
 
         # Wake — воспроизводим фразу и ждём команду
         if not clean:
