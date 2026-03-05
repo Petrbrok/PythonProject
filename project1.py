@@ -7,6 +7,7 @@ import tempfile
 import subprocess
 import threading
 import webbrowser
+import queue
 import speech_recognition
 from datetime import datetime
 from dotenv import load_dotenv
@@ -14,6 +15,12 @@ from groq import Groq
 from translate import Translator
 import edge_tts
 import pygame
+try:
+    import vosk
+    VOSK_AVAILABLE = True
+except ImportError:
+    VOSK_AVAILABLE = False
+    print("  [!] vosk не установлен: pip install vosk")
 
 load_dotenv()
 
@@ -34,6 +41,14 @@ is_speaking = False
 always_listen = False  # True — отвечать на любую фразу без имени
 speak_lock = threading.Lock()
 stop_speaking_event = threading.Event()
+
+# Окно активности
+last_activation = 0.0
+WINDOW_AFTER_COMMAND = 10
+WINDOW_AFTER_AI      = 15
+
+# Случайные фразы подтверждения
+CONFIRM_PHRASES = ["Есть!", "Выполняю.", "Сделано.", "Готово.", "Принято."]
 
 alarm_thread = None       # поток будильника
 break_reminder = None     # поток напоминания о перерывах
@@ -326,28 +341,73 @@ def play_sound(name="confirm"):
 
 # ─────────────────────────── МИК ───────────────────────────
 
-def listen(timeout=None):
-    """Слушает микрофон. Если is_speaking — прерывает речь при обнаружении голоса."""
+def _init_vosk():
+    if not VOSK_AVAILABLE:
+        return None
+    model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
+    if not os.path.exists(model_path):
+        print("  [!] Папка model/ не найдена — используется Google SR")
+        return None
+    try:
+        vosk.SetLogLevel(-1)
+        model = vosk.Model(model_path)
+        print("  [vosk] Модель загружена")
+        return model
+    except Exception as e:
+        print(f"  [!] Ошибка загрузки Vosk: {e}")
+        return None
+
+
+def listen(timeout=None, vosk_model=None):
+    """Слушает микрофон через Vosk или Google SR."""
     print("  [mic] Слушаю...")
+
+    if vosk_model:
+        try:
+            import sounddevice as sd
+            rec = vosk.KaldiRecognizer(vosk_model, 16000)
+            q = queue.Queue()
+
+            def _callback(indata, frames, time_info, status):
+                if not is_speaking:
+                    q.put(bytes(indata))
+
+            with sd.RawInputStream(samplerate=16000, blocksize=4000,
+                                   dtype="int16", channels=1, callback=_callback):
+                start = time.time()
+                limit = timeout or 8
+                while time.time() - start < limit:
+                    try:
+                        data = q.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    if is_speaking:
+                        stop_speech()
+                    if rec.AcceptWaveform(data):
+                        result = json.loads(rec.Result())
+                        text = result.get("text", "").strip()
+                        if text:
+                            print(f"  [you] {text}")
+                            return text
+            return None
+        except Exception as e:
+            print(f"  [!] Vosk ошибка: {e}, переключаюсь на Google SR")
+
+    # Google SR fallback
     while True:
         try:
             with speech_recognition.Microphone() as source:
-                # Если ассистент говорит — ставим короткий таймаут чтобы реагировать быстрее
                 phrase_limit = 8 if not is_speaking else 4
                 audio = sr.listen(source, phrase_time_limit=phrase_limit, timeout=timeout)
-
-            # Если что-то услышали пока говорили — сразу прерываем
             if is_speaking:
                 stop_speech()
-
             query = sr.recognize_google(audio, language="ru-RU").lower().strip()
             print(f"  [you] {query}")
             return query
         except speech_recognition.WaitTimeoutError:
             return None
         except speech_recognition.UnknownValueError:
-            if is_speaking:
-                pass  # Фоновый шум пока говорим — игнорируем
+            pass
         except Exception:
             pass
 
@@ -928,18 +988,23 @@ COMMANDS = {
 # ─────────────────────────── MAIN ───────────────────────────
 
 def main():
-    global is_muted
+    global is_muted, last_activation
 
-    print("\n  АССИСТЕНТ ЗАПУЩЕН\n")
-    print("  Калибровка микрофона...")
-    with speech_recognition.Microphone() as source:
-        sr.adjust_for_ambient_noise(source, duration=1.5)
+    print("\n  ╔══════════════════════════════╗")
+    print("  ║   АССИСТЕНТ ЛОРА ЗАПУЩЕН     ║")
+    print("  ╚══════════════════════════════╝\n")
+
+    vosk_model = _init_vosk()
+    if not vosk_model:
+        print("  Калибровка микрофона (Google SR)...")
+        with speech_recognition.Microphone() as source:
+            sr.adjust_for_ambient_noise(source, duration=1.5)
     print("  Готово. Говорите.\n")
 
     speak("Готова к работе")
 
     while True:
-        query = listen()
+        query = listen(vosk_model=vosk_model)
         if not query:
             continue
 
@@ -960,9 +1025,10 @@ def main():
             mute()
             continue
 
-        # Активация по имени или always_listen режим
+        # Активация по имени, окну активности или always_listen
         has_name = any(name in query for name in NAME_TRIGGERS)
-        if not has_name and not always_listen:
+        in_window = (time.time() - last_activation) < WINDOW_AFTER_AI
+        if not has_name and not always_listen and not in_window:
             continue
 
         # Убираем имя из запроса если оно есть
@@ -972,6 +1038,7 @@ def main():
             query = query.strip(",. ")
         if not query:
             speak("Слушаю?")
+            last_activation = time.time()
             continue
 
         # Стоп-триггеры
@@ -982,17 +1049,20 @@ def main():
         # Режим прослушивания
         if "отвечай всегда" in query:
             speak(always_listen_on())
+            last_activation = time.time()
             continue
         if "только имя" in query:
             speak(always_listen_off())
             continue
 
         # Запрос к ИИ
+        _t_start = time.time()
         online = check_internet()
         if not online:
             print("  [!] Нет интернета — офлайн режим")
 
         response = ask_ai(query) if online else None
+        print(f"  [⏱] Ответ за {time.time() - _t_start:.2f} сек")
 
         if not online and response is None:
             # Пробуем найти команду по ключевым словам без ИИ
@@ -1049,10 +1119,26 @@ def main():
             else:
                 result = "Команда не найдена"
 
+            short_results = {
+                "Скопировано", "Вставлено", "Сворачиваю", "Разворачиваю",
+                "Закрываю окно", "Громкость увеличена", "Громкость уменьшена",
+                "Звук отключён", "Звук включён", "Яркость увеличена", "Яркость уменьшена",
+                "Wi-Fi отключён", "Wi-Fi включён",
+            }
+            if result in short_results:
+                result = random.choice(CONFIRM_PHRASES)
+
+            # Обновляем окно активности
+            if command and command in COMMANDS:
+                last_activation = time.time() + (WINDOW_AFTER_COMMAND - WINDOW_AFTER_AI)
+            else:
+                last_activation = time.time()
+
             if result:
                 speak(result)
 
         except (json.JSONDecodeError, ValueError):
+            last_activation = time.time()
             speak(response)
 
 
