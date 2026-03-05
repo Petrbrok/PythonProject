@@ -150,6 +150,10 @@ LOCAL_COMMANDS = {
     "сверни окно":          "window_minimize",
     "сверни все":           "window_minimize",
     "свернуть окно":        "window_minimize",
+    "сверни все окна":      "window_minimize",
+    "убери все окна":       "window_minimize",
+    "скрой все окна":       "window_minimize",
+    "сверни всё":           "window_minimize",
     "разверни окно":        "window_maximize",
     "развернуть окно":      "window_maximize",
     "закрой окно":          "window_close",
@@ -391,6 +395,9 @@ CACHED_PHRASES = {
     "confirm_2":      "Сделано",
     "confirm_3":      "Готово",
     "confirm_4":      "Принято",
+    "unclear_0":      "Не поняла",
+    "unclear_1":      "Повтори пожалуйста",
+    "unclear_2":      "Не расслышала",
 }
 
 _phrase_cache: dict[str, str] = {}  # key -> путь к mp3
@@ -1241,9 +1248,13 @@ def main():
             print("  [muted]")
             continue
 
-        # Стоп — без имени
+        # Стоп — контекстно
         if any(w in query for w in STOP_TRIGGERS):
-            break_code()
+            if is_speaking:
+                stop_speech()
+                continue
+            else:
+                break_code()
 
         # Стоп — работает без имени
         if any(w in query for w in STOP_TRIGGERS):
@@ -1317,6 +1328,11 @@ def main():
             last_activation = time.time() + (WINDOW_AFTER_COMMAND - WINDOW_AFTER_AI)
 
         else:
+            # Фильтр мусора
+            if len(clean) < 4 or (len(clean.split()) < 2 and len(clean) < 6):
+                play_cached_random("unclear")
+                continue
+
             # ── Groq — только для вопросов и неизвестных фраз ──
             online = check_internet()
             if not online:
