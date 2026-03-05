@@ -57,7 +57,7 @@ break_reminder_active = False
 
 # ─────────────────────────── КОНСТАНТЫ ───────────────────────────
 
-NAME_TRIGGERS = ("лора", "флора", "laura", "лёра", "лаура", "лор")
+NAME_TRIGGERS = ("лора", "флора", "laura", "лёра", "лаура", "лор", "клара", "хлора", "лёра", "лара")
 
 WAKE_PHRASES  = ["Слушаю.", "Да.", "Здесь."]
 CONFIRM_PHRASES = ["Есть!", "Выполняю.", "Сделано.", "Готово.", "Принято."]
@@ -70,8 +70,8 @@ MUTE_TRIGGERS = (
 )
 
 UNMUTE_TRIGGERS = (
-    "размут", "включись", "слушай", "продолжай",
-    "проснись", "вернись", "активируйся", "ты здесь"
+    "размут", "включись", "продолжай",
+    "проснись", "вернись", "активируйся"
 )
 
 STOP_TRIGGERS = (
@@ -367,38 +367,94 @@ def play_sound(name="confirm"):
                 pass
             return
 
+# Кеш базовых фраз — генерируются один раз, воспроизводятся мгновенно
+CACHED_PHRASES = {
+    "ready":          "Готова к работе",
+    "listening_again":"Снова слушаю",
+    "no_internet":    "Нет интернета, попробуй базовые команды",
+    "error_0":        "Не получилось, попробуй снова",
+    "error_1":        "Что-то пошло не так",
+    "error_2":        "Ошибка, попробуй ещё раз",
+    "confirm_0":      "Есть",
+    "confirm_1":      "Выполняю",
+    "confirm_2":      "Сделано",
+    "confirm_3":      "Готово",
+    "confirm_4":      "Принято",
+}
+
+_phrase_cache: dict[str, str] = {}  # key -> путь к mp3
+
 def _generate_wake_sounds():
-    """Генерирует wake-фразы при первом запуске."""
+    """Генерирует wake-фразы и базовые фразы при первом запуске."""
     wake_dir = os.path.join("sounds", "wake")
+    cache_dir = os.path.join("sounds", "cache")
     os.makedirs(wake_dir, exist_ok=True)
+    os.makedirs(cache_dir, exist_ok=True)
 
     async def _gen(text, path):
         tts = edge_tts.Communicate(text, EDGE_VOICE)
         await tts.save(path)
 
+    # Wake фразы
     for i, phrase in enumerate(WAKE_PHRASES):
         path = os.path.join(wake_dir, f"wake_{i}.mp3")
         if not os.path.exists(path):
-            print(f"  [wake] Генерирую: {phrase}")
+            print(f"  [cache] Генерирую: {phrase}")
             try:
                 asyncio.run(_gen(phrase, path))
             except Exception as e:
-                print(f"  [!] Не удалось сгенерировать wake фразу: {e}")
+                print(f"  [!] {e}")
+
+    # Базовые фразы
+    for key, phrase in CACHED_PHRASES.items():
+        path = os.path.join(cache_dir, f"{key}.mp3")
+        if not os.path.exists(path):
+            print(f"  [cache] Генерирую: {phrase}")
+            try:
+                asyncio.run(_gen(phrase, path))
+            except Exception as e:
+                print(f"  [!] {e}")
+        if os.path.exists(path):
+            _phrase_cache[key] = path
+
+def _play_file(path: str):
+    """Воспроизводит mp3 файл мгновенно."""
+    try:
+        pygame.mixer.music.load(path)
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy():
+            pygame.time.Clock().tick(10)
+        pygame.mixer.music.unload()
+    except Exception:
+        pass
+
+def play_cached(key: str):
+    """Воспроизводит кешированную фразу мгновенно."""
+    if key in _phrase_cache:
+        _play_file(_phrase_cache[key])
+    else:
+        # Fallback на текст
+        text = CACHED_PHRASES.get(key, "")
+        if text:
+            speak(text)
+
+def play_cached_random(prefix: str):
+    """Воспроизводит случайную кешированную фразу с заданным префиксом."""
+    keys = [k for k in _phrase_cache if k.startswith(prefix)]
+    if keys:
+        _play_file(_phrase_cache[random.choice(keys)])
+    else:
+        if prefix == "confirm":
+            speak(random.choice(CONFIRM_PHRASES))
+        elif prefix == "error":
+            speak(random.choice(ERROR_PHRASES))
 
 def play_wake():
     """Воспроизводит случайную wake-фразу мгновенно."""
     wake_dir = os.path.join("sounds", "wake")
     files = [f for f in os.listdir(wake_dir) if f.endswith(".mp3")] if os.path.exists(wake_dir) else []
     if files:
-        path = os.path.join(wake_dir, random.choice(files))
-        try:
-            pygame.mixer.music.load(path)
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                pygame.time.Clock().tick(10)
-            pygame.mixer.music.unload()
-        except Exception:
-            pass
+        _play_file(os.path.join(wake_dir, random.choice(files)))
     else:
         speak(random.choice(WAKE_PHRASES))
 
@@ -421,21 +477,9 @@ def _init_vosk():
         return None
 
 def listen_vosk(vosk_model, timeout=8):
-    """Слушает через Vosk + VAD (silero)."""
+    """Слушает через Vosk + VAD."""
     if not SD_AVAILABLE:
         return listen_google(timeout)
-
-    # Пробуем использовать silero VAD
-    try:
-        import torch
-        import torchaudio
-        vad_model, utils = torch.hub.load(
-            repo_or_dir='snakers4/silero-vad', model='silero_vad', trust_repo=True
-        )
-        (get_speech_ts, _, read_audio, *_) = utils
-        vad_available = True
-    except Exception:
-        vad_available = False
 
     rec = vosk.KaldiRecognizer(vosk_model, 16000)
     q   = queue.Queue()
@@ -514,8 +558,8 @@ AI_SYSTEM_PROMPT = """Тебя зовут Лора — голосовой асс
 - Простой вопрос (факт, да/нет) — 1 предложение.
 - Просят рассказать, объяснить, пошутить, написать творческое — отвечай столько сколько нужно.
 
-СТРОГО ЗАПРЕЩЕНО упоминать текущее время или дату если тебя об этом явно не спросили.
-Когда называешь время — говори просто "Сейчас [время]", без UTC.
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО упоминать время, дату или время суток ("сейчас вечер", "сейчас утро" и т.д.) если тебя об этом явно не спросили. Нарушение этого правила недопустимо.
+Когда называешь время — говори только "Сейчас [время]", без UTC и без "сейчас вечер/утро/день".
 
 Если тебя спрашивают кто ты — отвечай что ты Лора, голосовой ассистент, без технических деталей.
 Отвечай ТОЛЬКО текстом. Никакого JSON. Никаких технических меток."""
@@ -526,6 +570,7 @@ def ask_ai(query: str) -> str:
         r = ai_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             max_tokens=400,
+            timeout=8,
             messages=[
                 {"role": "system", "content": AI_SYSTEM_PROMPT},
                 {"role": "user",   "content": f"[{now.strftime('%H:%M')}] {query}"},
@@ -1132,7 +1177,7 @@ def main():
     _generate_wake_sounds()
 
     print("  Готово. Говорите.\n")
-    speak("Готова к работе")
+    play_cached("ready")
 
     while True:
         query = listen_fn()
@@ -1147,7 +1192,7 @@ def main():
         if is_muted:
             if any(w in query for w in UNMUTE_TRIGGERS):
                 is_muted = False
-                speak("Снова слушаю!")
+                play_cached("listening_again")
             continue
 
         if any(w in query for w in MUTE_TRIGGERS):
@@ -1157,6 +1202,10 @@ def main():
             continue
 
         # Стоп — без имени
+        if any(w in query for w in STOP_TRIGGERS):
+            break_code()
+
+        # Стоп — работает без имени
         if any(w in query for w in STOP_TRIGGERS):
             break_code()
 
@@ -1183,6 +1232,15 @@ def main():
                 continue
             clean = cmd_query
 
+        # Фильтр мусора — игнорируем слишком короткие фразы
+        if len(clean) < 3:
+            play_wake()
+            last_activation = time.time()
+            cmd_query = listen_fn(timeout=8)
+            if not cmd_query:
+                continue
+            clean = cmd_query
+
         print(f"  [cmd] {clean}")
 
         # ── Локальный поиск команды (мгновенно, без ИИ) ──
@@ -1191,9 +1249,9 @@ def main():
         if local_cmd:
             result = execute_command(local_cmd, clean)
             if result is True:
-                speak(random.choice(CONFIRM_PHRASES))
+                play_cached_random("confirm")
             elif result is False:
-                speak(random.choice(ERROR_PHRASES))
+                play_cached_random("error")
             # None — команда сама озвучила
             last_activation = time.time() + (WINDOW_AFTER_COMMAND - WINDOW_AFTER_AI)
 
@@ -1201,7 +1259,7 @@ def main():
             # ── Groq — только для вопросов и неизвестных фраз ──
             online = check_internet()
             if not online:
-                speak("Нет интернета. Попробуй базовые команды.")
+                play_cached("no_internet")
                 continue
             _t = time.time()
             response = ask_ai(clean)
