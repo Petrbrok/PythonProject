@@ -425,8 +425,8 @@ def _generate_wake_sounds():
     os.makedirs(wake_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
 
-    async def _gen(text, path):
-        tts = edge_tts.Communicate(text, EDGE_VOICE)
+    async def _gen(text, path, rate="+20%"):
+        tts = edge_tts.Communicate(text, EDGE_VOICE, rate=rate)
         await tts.save(path)
 
     # Wake фразы
@@ -1360,12 +1360,21 @@ def main():
             last_activation = time.time() + (WINDOW_AFTER_COMMAND - WINDOW_AFTER_AI)
 
         else:
-            # Фильтр мусора
+            # Фильтр мусора — короткие фразы
             if len(clean) < 4 or (len(clean.split()) < 2 and len(clean) < 6):
                 play_cached_random("unclear")
                 continue
 
-            # ── Groq — только для вопросов и неизвестных фраз ──
+            # Groq только для вопросительных фраз
+            AI_TRIGGERS = ("расскажи", "объясни", "что такое", "почему", "как ", "кто такой",
+                           "кто такая", "зачем", "когда", "где ", "сколько стоит", "напиши",
+                           "придумай", "сочини", "пошути", "анекдот", "история", "сказка")
+            is_question = any(clean.startswith(t) or t in clean for t in AI_TRIGGERS)
+
+            if not is_question:
+                play_cached_random("unclear")
+                continue
+
             online = check_internet()
             if not online:
                 play_cached("no_internet")
