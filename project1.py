@@ -1219,6 +1219,30 @@ def main():
         return listen_google(timeout)
     listen_fn = _listen
 
+    # Загружаем образцы голоса если есть
+    samples_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice_samples.json")
+    if os.path.exists(samples_path):
+        try:
+            samples = json.load(open(samples_path, encoding="utf-8"))
+            # Добавляем варианты имени
+            if "лора" in samples:
+                for v in samples["лора"]:
+                    if v and v not in NAME_TRIGGERS:
+                        NAME_TRIGGERS = NAME_TRIGGERS + (v,)
+            # Добавляем варианты мута
+            if "мут" in samples:
+                for v in samples["мут"]:
+                    if v and v not in MUTE_TRIGGERS:
+                        MUTE_TRIGGERS = MUTE_TRIGGERS + (v,)
+            # Добавляем варианты размута
+            if "размут" in samples:
+                for v in samples["размут"]:
+                    if v and v not in UNMUTE_TRIGGERS:
+                        UNMUTE_TRIGGERS = UNMUTE_TRIGGERS + (v,)
+            print(f"  [samples] Загружены образцы голоса")
+        except Exception as e:
+            print(f"  [!] Ошибка загрузки образцов: {e}")
+
     # Генерируем wake-фразы
     print("  Генерирую wake-фразы...")
     _generate_wake_sounds()
