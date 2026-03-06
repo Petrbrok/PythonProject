@@ -21,7 +21,7 @@ REPEATS = 4  # сколько раз говорить каждое слово
 
 
 def load_vosk():
-    model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
+    model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "model")
     if not os.path.exists(model_path):
         print("❌ Папка model/ не найдена!")
         exit(1)

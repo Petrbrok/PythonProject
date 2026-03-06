@@ -79,7 +79,7 @@ UNMUTE_TRIGGERS = (
 STOP_TRIGGERS = (
     "завершить работу", "заверши работу", "выключись",
     "завершись", "закройся", "выход", "пока",
-    "до свидания", "отключись", "выключи себя"
+    "до свидания", "отключись", "выключи себя", "стоп"
 )
 
 APP_PATHS = {
@@ -134,7 +134,6 @@ LOCAL_COMMANDS = {
     "убавь громкость":      "volume_down",
     "выключи звук":         "sound_off",
     "без звука":            "sound_off",
-    "заглуши":              "sound_off",
     "включи звук":          "sound_on",
     "верни звук":           "sound_on",
 
@@ -190,6 +189,23 @@ LOCAL_COMMANDS = {
     # Приложения — браузер
     "открой браузер":       "open_browser",
     "закрой браузер":       "close_browser",
+
+    # Приложения — открыть
+    "открой телеграм":      "open_app:телеграм",
+    "запусти телеграм":     "open_app:телеграм",
+    "открой дискорд":       "open_app:дискорд",
+    "запусти дискорд":      "open_app:дискорд",
+    "открой спотифай":      "open_app:спотифай",
+    "открой хром":          "open_app:хром",
+    "запусти хром":         "open_app:хром",
+    "открой блокнот":       "open_app:блокнот",
+    "открой калькулятор":   "open_app:калькулятор",
+    "открой проводник":     "open_app:проводник",
+    "открой стим":          "open_app:steam",
+    "открой obs":           "open_app:obs",
+    "открой код":           "open_app:код",
+    "открой ворд":          "open_app:word",
+    "открой эксель":        "open_app:excel",
 
     # Музыка
     "включи музыку":        "play_music",
@@ -1089,6 +1105,9 @@ def execute_command(cmd: str, query: str = "") -> bool | None:
     if cmd.startswith("open_folder:"):
         return open_folder(cmd.split(":", 1)[1])
 
+    if cmd.startswith("open_app:"):
+        return open_app(cmd.split(":", 1)[1])
+
     dispatch = {
         "get_time":          lambda: speak(get_time()) or None,
         "get_date":          lambda: speak(get_date()) or None,
@@ -1192,11 +1211,9 @@ def execute_command(cmd: str, query: str = "") -> bool | None:
 # ─────────────────────────── MAIN ───────────────────────────
 
 def main():
-    global is_muted, last_activation, listen_fn
+    global is_muted, last_activation, listen_fn, NAME_TRIGGERS, MUTE_TRIGGERS, UNMUTE_TRIGGERS
 
-    print("\n  ╔══════════════════════════════╗")
-    print("  ║   АССИСТЕНТ ЛОРА ЗАПУЩЕН     ║")
-    print("  ╚══════════════════════════════╝\n")
+
 
     # Инициализация папок
     for folder in ("music", "sounds"):
@@ -1224,17 +1241,14 @@ def main():
     if os.path.exists(samples_path):
         try:
             samples = json.load(open(samples_path, encoding="utf-8"))
-            # Добавляем варианты имени
             if "лора" in samples:
                 for v in samples["лора"]:
                     if v and v not in NAME_TRIGGERS:
                         NAME_TRIGGERS = NAME_TRIGGERS + (v,)
-            # Добавляем варианты мута
             if "мут" in samples:
                 for v in samples["мут"]:
                     if v and v not in MUTE_TRIGGERS:
                         MUTE_TRIGGERS = MUTE_TRIGGERS + (v,)
-            # Добавляем варианты размута
             if "размут" in samples:
                 for v in samples["размут"]:
                     if v and v not in UNMUTE_TRIGGERS:
@@ -1244,10 +1258,8 @@ def main():
             print(f"  [!] Ошибка загрузки образцов: {e}")
 
     # Генерируем wake-фразы
-    print("  Генерирую wake-фразы...")
     _generate_wake_sounds()
 
-    print("  Готово. Говорите.\n")
     play_cached("ready")
 
     while True:
@@ -1279,10 +1291,6 @@ def main():
                 continue
             else:
                 break_code()
-
-        # Стоп — работает без имени
-        if any(w in query for w in STOP_TRIGGERS):
-            break_code()
 
         # Проверяем активацию через Левенштейн
         def _has_name(q):
