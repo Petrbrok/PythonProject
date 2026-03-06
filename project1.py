@@ -1262,92 +1262,39 @@ def main():
 
     play_cached("ready")
 
-    while True:
-        query = listen_fn()
-        if not query:
-            continue
+    def _process_command(query: str):
+        """Обрабатывает распознанную фразу."""
+        global is_muted, last_activation
 
         if is_speaking:
             stop_speech()
             time.sleep(0.05)
 
-        # Мут — без имени
         if is_muted:
             if any(w in query for w in UNMUTE_TRIGGERS):
                 is_muted = False
                 play_cached("listening_again")
-            continue
+            return
 
         if any(w in query for w in MUTE_TRIGGERS):
             is_muted = True
             stop_speech()
             print("  [muted]")
-            continue
+            return
 
-        # Стоп — контекстно
         if any(w in query for w in STOP_TRIGGERS):
             if is_speaking:
                 stop_speech()
-                continue
+                return
             else:
                 break_code()
 
-        # Проверяем активацию через Левенштейн
-        def _has_name(q):
-            words = q.lower().split()
-            for word in words:
-                for name in NAME_TRIGGERS:
-                    max_l = max(len(word), len(name))
-                    if max_l == 0:
-                        continue
-                    score = 1 - levenshtein(word, name) / max_l
-                    if score >= 0.75:
-                        return True, name
-            return False, None
-
-        has_name, matched_name = _has_name(query)
-        in_window = (time.time() - last_activation) < WINDOW_AFTER_AI
-
-        if not has_name and not always_listen and not in_window:
-            continue
-
-        # Убираем имя из запроса
-        clean = query
-        if has_name and matched_name:
-            # Убираем найденное слово которое похоже на имя
-            words = clean.split()
-            filtered = []
-            removed = False
-            for word in words:
-                max_l = max(len(word), len(matched_name))
-                score = 1 - levenshtein(word, matched_name) / max_l if max_l else 0
-                if score >= 0.75 and not removed:
-                    removed = True
-                    continue
-                filtered.append(word)
-            clean = " ".join(filtered).strip(",. ")
-
-        # Wake — воспроизводим фразу и ждём команду
-        if not clean:
-            play_wake()
-            last_activation = time.time()
-            cmd_query = listen_fn(timeout=8)
-            if not cmd_query:
-                continue
-            clean = cmd_query
-
-        # Фильтр мусора — игнорируем слишком короткие фразы
+        clean = query.strip()
         if len(clean) < 3:
-            play_wake()
-            last_activation = time.time()
-            cmd_query = listen_fn(timeout=8)
-            if not cmd_query:
-                continue
-            clean = cmd_query
+            play_cached_random("unclear")
+            return
 
         print(f"  [cmd] {clean}")
-
-        # ── Локальный поиск команды (мгновенно, без ИИ) ──
         local_cmd = find_local_command(clean)
 
         if local_cmd:
@@ -1356,34 +1303,129 @@ def main():
                 play_cached_random("confirm")
             elif result is False:
                 play_cached_random("error")
-            # None — команда сама озвучила
             last_activation = time.time() + (WINDOW_AFTER_COMMAND - WINDOW_AFTER_AI)
-
         else:
-            # Фильтр мусора — короткие фразы
             if len(clean) < 4 or (len(clean.split()) < 2 and len(clean) < 6):
                 play_cached_random("unclear")
-                continue
-
-            # Groq только для вопросительных фраз
+                return
             AI_TRIGGERS = ("расскажи", "объясни", "что такое", "почему", "как ", "кто такой",
                            "кто такая", "зачем", "когда", "где ", "сколько стоит", "напиши",
                            "придумай", "сочини", "пошути", "анекдот", "история", "сказка")
-            is_question = any(clean.startswith(t) or t in clean for t in AI_TRIGGERS)
-
-            if not is_question:
+            if not any(clean.startswith(t) or t in clean for t in AI_TRIGGERS):
                 play_cached_random("unclear")
-                continue
-
+                return
             online = check_internet()
             if not online:
                 play_cached("no_internet")
-                continue
+                return
             _t = time.time()
             response = ask_ai(clean)
             print(f"  [⏱] {time.time()-_t:.2f} сек")
             speak(response)
             last_activation = time.time()
+
+    # ── Porcupine режим ──
+    ppn_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), PORCUPINE_MODEL)
+    if PORCUPINE_AVAILABLE and PICOVOICE_KEY and os.path.exists(ppn_path):
+        print("  [porcupine] Wake word активен")
+        porcupine = pvporcupine.create(
+            access_key=PICOVOICE_KEY,
+            keyword_paths=[ppn_path],
+            sensitivities=[0.7]
+        )
+        recorder = PvRecorder(device_index=-1, frame_length=porcupine.frame_length)
+        recorder.start()
+        try:
+            while True:
+                pcm = recorder.read()
+                keyword_index = porcupine.process(pcm)
+                if keyword_index >= 0:
+                    print("  [wake] Лора услышана!")
+                    recorder.stop()
+                    play_wake()
+                    last_activation = time.time()
+                    cmd_query = listen_fn(timeout=8)
+                    recorder.start()
+                    if cmd_query:
+                        print(f"  [you] {cmd_query}")
+                        _process_command(cmd_query)
+                elif (time.time() - last_activation) < WINDOW_AFTER_AI:
+                    cmd_query = listen_fn(timeout=1)
+                    if cmd_query:
+                        print(f"  [you] {cmd_query}")
+                        _process_command(cmd_query)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            recorder.stop()
+            recorder.delete()
+            porcupine.delete()
+    else:
+        if not PICOVOICE_KEY:
+            print("  [!] Добавь PICOVOICE_KEY в .env для wake word")
+        print("  Говорите.\n")
+        while True:
+            query = listen_fn()
+            if not query:
+                continue
+            print(f"  [you] {query}")
+            if is_muted:
+                if any(w in query for w in UNMUTE_TRIGGERS):
+                    is_muted = False
+                    play_cached("listening_again")
+                continue
+            if any(w in query for w in MUTE_TRIGGERS):
+                is_muted = True
+                stop_speech()
+                print("  [muted]")
+                continue
+            if any(w in query for w in STOP_TRIGGERS):
+                if is_speaking:
+                    stop_speech()
+                    continue
+                else:
+                    break_code()
+
+            def _has_name(q):
+                words = q.lower().split()
+                for word in words:
+                    for name in NAME_TRIGGERS:
+                        max_l = max(len(word), len(name))
+                        if max_l == 0:
+                            continue
+                        score = 1 - levenshtein(word, name) / max_l
+                        if score >= 0.75:
+                            return True, name
+                return False, None
+
+            has_name, matched_name = _has_name(query)
+            in_window = (time.time() - last_activation) < WINDOW_AFTER_AI
+            if not has_name and not always_listen and not in_window:
+                continue
+
+            clean = query
+            if has_name and matched_name:
+                words = clean.split()
+                filtered = []
+                removed = False
+                for word in words:
+                    max_l = max(len(word), len(matched_name))
+                    score = 1 - levenshtein(word, matched_name) / max_l if max_l else 0
+                    if score >= 0.75 and not removed:
+                        removed = True
+                        continue
+                    filtered.append(word)
+                clean = " ".join(filtered).strip(",. ")
+
+            if not clean:
+                play_wake()
+                last_activation = time.time()
+                cmd_query = listen_fn(timeout=8)
+                if not cmd_query:
+                    continue
+                clean = cmd_query
+
+            _process_command(clean)
 
 
 if __name__ == "__main__":
