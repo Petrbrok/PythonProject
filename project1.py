@@ -341,6 +341,7 @@ def _play_file(path: str):
 
 def play_cached(key: str):
     if key in _phrase_cache:
+        print(f"  >> {CACHED_PHRASES.get(key, key)}")
         _play_file(_phrase_cache[key])
     elif key in CACHED_PHRASES:
         speak(CACHED_PHRASES[key])
@@ -349,7 +350,9 @@ def play_cached(key: str):
 def play_cached_random(prefix: str):
     keys = [k for k in _phrase_cache if k.startswith(prefix)]
     if keys:
-        _play_file(_phrase_cache[random.choice(keys)])
+        chosen = random.choice(keys)
+        print(f"  >> {CACHED_PHRASES.get(chosen, chosen)}")
+        _play_file(_phrase_cache[chosen])
     elif prefix == "confirm":
         speak(random.choice(CONFIRM_PHRASES))
     elif prefix == "unclear":
@@ -427,7 +430,6 @@ def listen_google(timeout=8) -> str | None:
         if is_speaking:
             stop_speech()
         text = sr_engine.recognize_google(audio, language="ru-RU").lower().strip()
-        print(f"  [you] {text}")
         return text
     except speech_recognition.WaitTimeoutError:
         return None
@@ -1051,6 +1053,7 @@ def main():
 
                 print(f"  [you] {cmd_text}")
                 _process(cmd_text)
+                last_active = time.time()
 
                 # Окно активности — слушаем продолжение без wake word
                 while (time.time() - last_active) < WINDOW_AFTER_AI:
