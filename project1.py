@@ -23,18 +23,6 @@ except ImportError:
     WSR_AVAILABLE = False
 
 try:
-    import vosk
-    VOSK_AVAILABLE = True
-except ImportError:
-    VOSK_AVAILABLE = False
-
-try:
-    import sounddevice as sd
-    SD_AVAILABLE = True
-except ImportError:
-    SD_AVAILABLE = False
-
-try:
     import pvporcupine
     from pvrecorder import PvRecorder
     PORCUPINE_AVAILABLE = True
@@ -46,11 +34,11 @@ import speech_recognition
 load_dotenv()
 
 PICOVOICE_KEY   = os.getenv("PICOVOICE_KEY", "")
-PPN_PATH        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lora_lora.ppn")
+PPN_PATH        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hey_lora.ppn")
 EDGE_VOICE      = os.getenv("EDGE_VOICE", "ru-RU-SvetlanaNeural")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")
 
-# ИИ отключён временно — не удалять
+# ── ИИ отключён временно, не удалять ────────────────────────────────────────
 AI_ENABLED = False
 try:
     from groq import Groq
@@ -67,20 +55,20 @@ is_speaking         = False
 last_activation     = 0.0
 stop_speaking_event = threading.Event()
 
-WINDOW_AFTER_AI      = 12
+WINDOW_AFTER_AI       = 12
 alarm_thread          = None
 break_reminder_active = False
 
-CONFIRM_PHRASES = ["Есть!", "Выполняю.", "Сделано.", "Готово.", "Принято."]
-ERROR_PHRASES   = ["Не поняла.", "Повтори пожалуйста.", "Не расслышала."]
-WAKE_PHRASES    = ["Слушаю.", "Да.", "Здесь."]
+WAKE_PHRASES = ["Слушаю.", "Да.", "Здесь."]
 
 MUTE_TRIGGERS = (
     "замолчи", "молчи", "тихо", "пауза", "не слушай",
-    "заткнись", "хватит", "подожди", "погоди", "тишина", "умолкни"
+    "заткнись", "хватит", "подожди", "погоди", "тишина", "умолкни",
+    "мут", "стоп", "помолчи", "притихни",
 )
 UNMUTE_TRIGGERS = (
-    "размут", "включись", "продолжай", "проснись", "вернись", "активируйся"
+    "размут", "включись", "продолжай", "проснись", "вернись", "активируйся",
+    "слушай", "лора", "эй лора",
 )
 STOP_TRIGGERS = (
     "завершить работу", "заверши работу", "выключись", "завершись",
@@ -113,101 +101,153 @@ APP_PATHS = {
     "код":             r"C:\Users\%USERNAME%\AppData\Local\Programs\Microsoft VS Code\Code.exe",
 }
 
+APP_NAMES_RU = {
+    "телеграм": "Телеграм", "telegram": "Телеграм",
+    "дискорд":  "Дискорд",  "discord":  "Дискорд",
+    "спотифай": "Спотифай", "spotify":  "Спотифай",
+    "хром":     "Хром",     "chrome":   "Хром",
+    "блокнот":  "Блокнот",  "notepad":  "Блокнот",
+    "калькулятор": "Калькулятор", "calculator": "Калькулятор",
+    "проводник": "Проводник", "explorer": "Проводник",
+    "стим":     "Стим",     "steam":    "Стим",
+    "obs":      "OBS",
+    "код":      "VS Code",  "vscode":   "VS Code",
+    "ворд":     "Word",     "word":     "Word",
+    "эксель":   "Excel",    "excel":    "Excel",
+}
+
 # ─── КОМАНДЫ ────────────────────────────────────────────────────────────────
-# Добавляй новые команды сюда или в commands.yaml
-# Формат yaml:
+# Добавляй новые фразы сюда или в commands.yaml:
 #   get_time:
 #     - "который час"
-#     - "сколько времени"
+#     - "время"
 
 LOCAL_COMMANDS = {
-    "который час":           "get_time",
-    "сколько времени":       "get_time",
-    "какое время":           "get_time",
-    "время":                 "get_time",
-    "какое сегодня число":   "get_date",
-    "какая дата":            "get_date",
-    "день недели":           "get_date",
-    "увеличь громкость":     "volume_up",
-    "громче":                "volume_up",
-    "сделай громче":         "volume_up",
-    "прибавь громкость":     "volume_up",
-    "уменьши громкость":     "volume_down",
-    "тише":                  "volume_down",
-    "сделай тише":           "volume_down",
-    "убавь громкость":       "volume_down",
-    "выключи звук":          "sound_off",
-    "без звука":             "sound_off",
-    "включи звук":           "sound_on",
-    "верни звук":            "sound_on",
-    "увеличь яркость":       "brightness_up",
-    "ярче":                  "brightness_up",
-    "сделай ярче":           "brightness_up",
-    "уменьши яркость":       "brightness_down",
-    "темнее":                "brightness_down",
-    "сделай темнее":         "brightness_down",
-    "сверни окно":           "window_minimize",
-    "сверни все":            "window_minimize",
-    "сверни всё":            "window_minimize",
-    "убери все окна":        "window_minimize",
-    "разверни окно":         "window_maximize",
-    "закрой окно":           "window_close",
-    "переключи окно":        "switch_window",
-    "альт таб":              "switch_window",
-    "скопируй":              "clipboard_copy",
-    "вставь":                "clipboard_paste",
-    "что в буфере":          "clipboard_read",
-    "скриншот":              "screenshot",
-    "сделай скриншот":       "screenshot",
-    "снимок экрана":         "screenshot",
-    "заряд батареи":         "get_battery",
-    "сколько заряда":        "get_battery",
-    "батарея":               "get_battery",
-    "загрузка процессора":   "get_cpu",
-    "включи вайфай":         "wifi_on",
-    "выключи вайфай":        "wifi_off",
-    "открой браузер":        "open_browser",
-    "закрой браузер":        "close_browser",
-    "открой телеграм":       "open_app:телеграм",
-    "запусти телеграм":      "open_app:телеграм",
-    "открой дискорд":        "open_app:дискорд",
-    "запусти дискорд":       "open_app:дискорд",
-    "открой спотифай":       "open_app:спотифай",
-    "открой хром":           "open_app:хром",
-    "запусти хром":          "open_app:хром",
-    "открой блокнот":        "open_app:блокнот",
-    "открой калькулятор":    "open_app:калькулятор",
-    "открой проводник":      "open_app:проводник",
-    "открой стим":           "open_app:steam",
-    "открой obs":            "open_app:obs",
-    "открой код":            "open_app:код",
-    "открой ворд":           "open_app:word",
-    "открой эксель":         "open_app:excel",
-    "включи музыку":         "play_music",
-    "играй музыку":          "play_music",
-    "выключи музыку":        "stop_music",
-    "добавь задачу":         "create_task",
-    "новая задача":          "create_task",
-    "список задач":          "show_tasks",
-    "мои задачи":            "show_tasks",
-    "очисти задачи":         "clear_tasks",
-    "выключи компьютер":     "shutdown",
-    "перезагрузи":           "restart",
-    "перезагрузка":          "restart",
-    "спящий режим":          "sleep",
-    "отмени выключение":     "cancel_shutdown",
-    "открой загрузки":       "open_folder:загрузки",
-    "открой документы":      "open_folder:документы",
-    "открой рабочий стол":   "open_folder:рабочий стол",
-    "открой музыку":         "open_folder:музыка",
-    "открой видео":          "open_folder:видео",
-    "включи перерывы":       "break_reminder_on",
-    "выключи перерывы":      "break_reminder_off",
-    "замолчи":               "mute",
-    "молчи":                 "mute",
-    "тихо":                  "mute",
-    "размут":                "unmute",
-    "включись":              "unmute",
+    # Время
+    "который час":                    "get_time",
+    "сколько времени":                "get_time",
+    "какое время":                    "get_time",
+    "время":                          "get_time",
+    "какое сегодня число":            "get_date",
+    "какая дата":                     "get_date",
+    "день недели":                    "get_date",
+    "дата":                           "get_date",
+    # Громкость
+    "увеличь громкость":              "volume_up",
+    "громче":                         "volume_up",
+    "сделай громче":                  "volume_up",
+    "прибавь громкость":              "volume_up",
+    "уменьши громкость":              "volume_down",
+    "тише":                           "volume_down",
+    "сделай тише":                    "volume_down",
+    "убавь громкость":                "volume_down",
+    "выключи звук":                   "sound_off",
+    "без звука":                      "sound_off",
+    "включи звук":                    "sound_on",
+    "верни звук":                     "sound_on",
+    "максимальная громкость":         "volume_max",
+    "поставь максимальную громкость": "volume_max",
+    "минимальная громкость":          "volume_min",
+    # Яркость
+    "увеличь яркость":                "brightness_up",
+    "ярче":                           "brightness_up",
+    "сделай ярче":                    "brightness_up",
+    "уменьши яркость":                "brightness_down",
+    "темнее":                         "brightness_down",
+    "сделай темнее":                  "brightness_down",
+    # Окна
+    "сверни окно":                    "window_minimize",
+    "сверни все":                     "window_minimize",
+    "сверни всё":                     "window_minimize",
+    "убери все окна":                 "window_minimize",
+    "разверни окно":                  "window_maximize",
+    "закрой окно":                    "window_close",
+    "переключи окно":                 "switch_window",
+    "альт таб":                       "switch_window",
+    # Буфер
+    "скопируй":                       "clipboard_copy",
+    "вставь":                         "clipboard_paste",
+    "что в буфере":                   "clipboard_read",
+    # Скриншот
+    "скриншот":                       "screenshot",
+    "сделай скриншот":                "screenshot",
+    "снимок экрана":                  "screenshot",
+    # Система
+    "заряд батареи":                  "get_battery",
+    "сколько заряда":                 "get_battery",
+    "батарея":                        "get_battery",
+    "загрузка процессора":            "get_cpu",
+    "нагрузка системы":               "get_cpu",
+    # WiFi
+    "включи вайфай":                  "wifi_toggle_on",
+    "включи wifi":                    "wifi_toggle_on",
+    "включи wi-fi":                   "wifi_toggle_on",
+    "включи вай фай":                 "wifi_toggle_on",
+    "выключи вайфай":                 "wifi_toggle_off",
+    "выключи wifi":                   "wifi_toggle_off",
+    "выключи wi-fi":                  "wifi_toggle_off",
+    "выключи вай фай":                "wifi_toggle_off",
+    "вайфай":                         "wifi_toggle",
+    "wifi":                           "wifi_toggle",
+    "wi-fi":                          "wifi_toggle",
+    # Браузер
+    "открой браузер":                 "open_browser",
+    "закрой браузер":                 "close_browser",
+    # Приложения
+    "открой телеграм":                "open_app:телеграм",
+    "запусти телеграм":               "open_app:телеграм",
+    "открой дискорд":                 "open_app:дискорд",
+    "запусти дискорд":                "open_app:дискорд",
+    "открой спотифай":                "open_app:спотифай",
+    "запусти спотифай":               "open_app:спотифай",
+    "открой хром":                    "open_app:хром",
+    "запусти хром":                   "open_app:хром",
+    "открой блокнот":                 "open_app:блокнот",
+    "открой калькулятор":             "open_app:калькулятор",
+    "открой проводник":               "open_app:проводник",
+    "открой стим":                    "open_app:steam",
+    "открой obs":                     "open_app:obs",
+    "открой код":                     "open_app:код",
+    "открой ворд":                    "open_app:word",
+    "открой эксель":                  "open_app:excel",
+    # Музыка
+    "включи музыку":                  "play_music",
+    "играй музыку":                   "play_music",
+    "выключи музыку":                 "stop_music",
+    "стоп музыка":                    "stop_music",
+    # Задачи
+    "добавь задачу":                  "create_task",
+    "новая задача":                   "create_task",
+    "список задач":                   "show_tasks",
+    "мои задачи":                     "show_tasks",
+    "очисти задачи":                  "clear_tasks",
+    # Папки
+    "открой загрузки":                "open_folder:загрузки",
+    "открой документы":               "open_folder:документы",
+    "открой рабочий стол":            "open_folder:рабочий стол",
+    "открой музыку":                  "open_folder:музыка",
+    "открой видео":                   "open_folder:видео",
+    "открой изображения":             "open_folder:изображения",
+    # Выключение
+    "выключи компьютер":              "shutdown",
+    "перезагрузи":                    "restart",
+    "перезагрузка":                   "restart",
+    "спящий режим":                   "sleep",
+    "отмени выключение":              "cancel_shutdown",
+    # Перерывы
+    "включи перерывы":                "break_reminder_on",
+    "выключи перерывы":               "break_reminder_off",
+    # Мут/размут
+    "замолчи":                        "mute",
+    "молчи":                          "mute",
+    "мут":                            "mute",
+    "тихо":                           "mute",
+    "стоп":                           "mute",
+    "лора":                           "ping",
+    "размут":                         "unmute",
+    "включись":                       "unmute",
+    "слушай":                         "unmute",
+    "продолжай":                      "unmute",
 }
 
 _yaml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "commands.yaml")
@@ -224,61 +264,51 @@ if os.path.exists(_yaml_path):
         print(f"  [!] commands.yaml: {e}")
 
 
-# ─── WSR ГРАММАТИКА ─────────────────────────────────────────────────────────
+# ─── WSR ────────────────────────────────────────────────────────────────────
 
 class WSRListener:
-    """Windows Speech Recognition с грамматикой — только известные фразы."""
+    SRATopLevel  = 0x00000001
+    SRADynamic   = 0x00000002
+    SGDSActive   = 1
+    SGDSInactive = 0
 
     def __init__(self, phrases: list[str]):
         pythoncom.CoInitialize()
-        self._recognizer = win32com.client.Dispatch("SAPI.SpInprocRecognizer")
+        self._recognizer = win32com.client.Dispatch("SAPI.SpSharedRecognizer")
         self._context    = self._recognizer.CreateRecoContext()
         self._grammar    = self._context.CreateGrammar(0)
-        self._grammar.DictationSetState(0)  # отключаем диктовку
-
-        rule = self._grammar.Rules.Add("commands",
-               win32com.client.constants.SRATopLevel +
-               win32com.client.constants.SRADynamic, 0)
-        rule.Clear()
-        for phrase in phrases:
-            rule.InitialState.AddWordTransition(None, phrase)
-        self._grammar.Rules.Commit()
-        self._grammar.CmdSetRuleState("commands",
-               win32com.client.constants.SGDSActive)
-
-        self._result_queue = queue.Queue()
-
-        # Подписка на события
-        self._sink = win32com.client.WithEvents(
-            self._context, _WSREventSink(self._result_queue)
+        self._grammar.DictationSetState(0)
+        rule = self._grammar.Rules.Add(
+            "commands", self.SRATopLevel | self.SRADynamic, 0
         )
+        rule.Clear()
+        skipped = 0
+        for phrase in phrases:
+            try:
+                rule.InitialState.AddWordTransition(None, phrase)
+            except Exception:
+                skipped += 1
+        if skipped:
+            print(f"  [wsr] Пропущено фраз: {skipped}")
+        self._grammar.Rules.Commit()
+        self._grammar.CmdSetRuleState("commands", self.SGDSActive)
 
     def listen(self, timeout=8) -> str | None:
         deadline = time.time() + timeout
         while time.time() < deadline:
+            pythoncom.PumpWaitingMessages()
             try:
-                return self._result_queue.get(timeout=0.1)
-            except queue.Empty:
+                result = self._context.GetRecognizeResult()
+                if result:
+                    return result.PhraseInfo.GetText().lower().strip()
+            except Exception:
                 pass
+            time.sleep(0.05)
         return None
 
     def close(self):
         try:
-            self._grammar.CmdSetRuleState("commands",
-                   win32com.client.constants.SGDSInactive)
-        except Exception:
-            pass
-
-
-class _WSREventSink:
-    def __init__(self, result_queue):
-        self._q = result_queue
-
-    def OnRecognition(self, StreamNumber, StreamPosition, RecognitionType, Result):
-        try:
-            res = win32com.client.Dispatch(Result)
-            text = res.PhraseInfo.GetText().lower().strip()
-            self._q.put(text)
+            self._grammar.CmdSetRuleState("commands", self.SGDSInactive)
         except Exception:
             pass
 
@@ -288,11 +318,6 @@ class _WSREventSink:
 CACHED_PHRASES = {
     "ready":           "Готова к работе",
     "listening_again": "Снова слушаю",
-    "confirm_0":       "Есть",
-    "confirm_1":       "Выполняю",
-    "confirm_2":       "Сделано",
-    "confirm_3":       "Готово",
-    "confirm_4":       "Принято",
     "unclear_0":       "Не поняла",
     "unclear_1":       "Повтори пожалуйста",
     "unclear_2":       "Не расслышала",
@@ -347,16 +372,14 @@ def play_cached(key: str):
         speak(CACHED_PHRASES[key])
 
 
-def play_cached_random(prefix: str):
-    keys = [k for k in _phrase_cache if k.startswith(prefix)]
+def play_unclear():
+    keys = [k for k in _phrase_cache if k.startswith("unclear")]
     if keys:
         chosen = random.choice(keys)
         print(f"  >> {CACHED_PHRASES.get(chosen, chosen)}")
         _play_file(_phrase_cache[chosen])
-    elif prefix == "confirm":
-        speak(random.choice(CONFIRM_PHRASES))
-    elif prefix == "unclear":
-        speak(random.choice(ERROR_PHRASES))
+    else:
+        speak(random.choice(["Не поняла", "Повтори пожалуйста", "Не расслышала"]))
 
 
 def play_wake():
@@ -421,7 +444,7 @@ def stop_speech():
     is_speaking = False
 
 
-# ─── STT FALLBACK (Google) ──────────────────────────────────────────────────
+# ─── STT fallback ───────────────────────────────────────────────────────────
 
 def listen_google(timeout=8) -> str | None:
     try:
@@ -429,8 +452,7 @@ def listen_google(timeout=8) -> str | None:
             audio = sr_engine.listen(source, phrase_time_limit=8, timeout=timeout)
         if is_speaking:
             stop_speech()
-        text = sr_engine.recognize_google(audio, language="ru-RU").lower().strip()
-        return text
+        return sr_engine.recognize_google(audio, language="ru-RU").lower().strip()
     except speech_recognition.WaitTimeoutError:
         return None
     except speech_recognition.UnknownValueError:
@@ -439,7 +461,7 @@ def listen_google(timeout=8) -> str | None:
         return None
 
 
-# ─── ИИ (отключён, не удалять) ──────────────────────────────────────────────
+# ─── ИИ (отключён) ──────────────────────────────────────────────────────────
 
 AI_SYSTEM_PROMPT = """Тебя зовут Лора — голосовой ассистент. Общаешься как друг — просто, с лёгким юмором. Отвечай на русском.
 Простой вопрос — 1 предложение. Объяснение/творческое — столько сколько нужно.
@@ -470,79 +492,6 @@ def ask_ai(query: str) -> str:
 listen_fn = None
 
 
-def get_time():
-    speak(f"Сейчас {datetime.now().strftime('%H:%M')}.")
-    return True
-
-def get_date():
-    months = ["января","февраля","марта","апреля","мая","июня",
-              "июля","августа","сентября","октября","ноября","декабря"]
-    n = datetime.now()
-    speak(f"Сегодня {n.day} {months[n.month-1]} {n.year}, "
-          f"{['понедельник','вторник','среда','четверг','пятница','суббота','воскресенье'][n.weekday()]}.")
-    return True
-
-def screenshot():
-    try:
-        import pyautogui
-        pyautogui.screenshot(f"screenshot_{int(time.time())}.png")
-        return True
-    except Exception:
-        return False
-
-def clipboard_read():
-    try:
-        import pyperclip
-        t = pyperclip.paste()
-        speak(f"В буфере: {t[:200]}" if t else "Буфер пуст.")
-        return True
-    except Exception:
-        return False
-
-def _resolve_app(name: str) -> str:
-    return APP_PATHS.get(name.lower(), name).replace("%USERNAME%", os.environ.get("USERNAME", ""))
-
-def open_app(name: str):
-    p = _resolve_app(name)
-    try:
-        subprocess.Popen(p)
-        return True
-    except Exception:
-        try:
-            subprocess.Popen(p, shell=True)
-            return True
-        except Exception:
-            return False
-
-def close_app(name: str):
-    pm = {
-        "telegram":"telegram","телеграм":"telegram","discord":"discord","дискорд":"discord",
-        "spotify":"spotify","chrome":"chrome","хром":"chrome","notepad":"notepad",
-        "word":"winword","excel":"excel","obs":"obs64","steam":"steam","vscode":"code","код":"code",
-    }
-    try:
-        subprocess.run(["powershell.exe", f"Stop-Process -Name {pm.get(name.lower(),name)} -ErrorAction SilentlyContinue"], check=False)
-        return True
-    except Exception:
-        return False
-
-def open_browser():
-    speak("Какой сайт?")
-    site = listen_fn()
-    if not site:
-        return False
-    url = f"https://{site}" if "." in site and " " not in site else f"https://www.google.com/search?q={site.replace(' ','+')}"
-    webbrowser.open(url)
-    return True
-
-def close_browser():
-    for b in ("chrome","firefox","msedge","opera","brave"):
-        try:
-            subprocess.run(["powershell.exe", f"Stop-Process -Name {b} -ErrorAction SilentlyContinue"], check=False)
-        except Exception:
-            pass
-    return True
-
 def _vol():
     try:
         from ctypes import POINTER, cast
@@ -553,265 +502,269 @@ def _vol():
     except Exception:
         return None
 
-def sound_off():
+
+def _get_vol_pct() -> int | None:
+    v = _vol()
+    if v:
+        return int(round(v.GetMasterVolumeLevelScalar() * 100))
+    return None
+
+
+def _wifi_status() -> bool:
+    """True = включён, False = выключен."""
+    try:
+        r = subprocess.run(
+            ["netsh", "interface", "show", "interface", "name=Wi-Fi"],
+            capture_output=True, text=True, timeout=3
+        )
+        return "Connected" in r.stdout or "Подключен" in r.stdout or "connect" in r.stdout.lower()
+    except Exception:
+        return False
+
+
+def get_time() -> str:
+    return f"Сейчас {datetime.now().strftime('%H:%M')}."
+
+
+def get_date() -> str:
+    months = ["января","февраля","марта","апреля","мая","июня",
+              "июля","августа","сентября","октября","ноября","декабря"]
+    n = datetime.now()
+    return f"Сегодня {n.day} {months[n.month-1]} {n.year}, {['понедельник','вторник','среда','четверг','пятница','суббота','воскресенье'][n.weekday()]}."
+
+
+def volume_up() -> str:
+    v = _vol()
+    if v:
+        new = min(1.0, v.GetMasterVolumeLevelScalar() + 0.1)
+        v.SetMasterVolumeLevelScalar(new, None)
+        return f"Громкость {int(round(new * 100))}%."
+    else:
+        for _ in range(5):
+            os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]175)")
+        return "Громкость увеличена."
+
+
+def volume_down() -> str:
+    v = _vol()
+    if v:
+        new = max(0.0, v.GetMasterVolumeLevelScalar() - 0.1)
+        v.SetMasterVolumeLevelScalar(new, None)
+        return f"Громкость {int(round(new * 100))}%."
+    else:
+        for _ in range(5):
+            os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]174)")
+        return "Громкость уменьшена."
+
+
+def volume_max() -> str:
+    v = _vol()
+    if v:
+        v.SetMasterVolumeLevelScalar(1.0, None)
+    return "Громкость максимальная."
+
+
+def volume_min() -> str:
+    v = _vol()
+    if v:
+        v.SetMasterVolumeLevelScalar(0.0, None)
+    return "Громкость минимальная."
+
+
+def sound_off() -> str:
     v = _vol()
     if v:
         v.SetMute(1, None)
     else:
         os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]173)")
-    return True
+    return "Звук выключен."
 
-def sound_on():
+
+def sound_on() -> str:
     v = _vol()
     if v:
         v.SetMute(0, None)
     else:
         os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]173)")
-    return True
+    return "Звук включён."
 
-def volume_up():
-    v = _vol()
-    if v:
-        v.SetMasterVolumeLevelScalar(min(1.0, v.GetMasterVolumeLevelScalar() + 0.1), None)
-    else:
-        for _ in range(5):
-            os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]175)")
-    return True
 
-def volume_down():
-    v = _vol()
-    if v:
-        v.SetMasterVolumeLevelScalar(max(0.0, v.GetMasterVolumeLevelScalar() - 0.1), None)
-    else:
-        for _ in range(5):
-            os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]174)")
-    return True
-
-def brightness_up():
+def brightness_up() -> str:
     try:
         import screen_brightness_control as sbc
-        sbc.set_brightness(min(100, sbc.get_brightness()[0] + 20))
-        return True
+        cur = sbc.get_brightness()[0]
+        new = min(100, cur + 20)
+        sbc.set_brightness(new)
+        return f"Яркость {new}%."
     except Exception:
         os.system("powershell (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,[math]::Min(100,((Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness)+20))")
-        return True
+        return "Яркость увеличена."
 
-def brightness_down():
+
+def brightness_down() -> str:
     try:
         import screen_brightness_control as sbc
-        sbc.set_brightness(max(0, sbc.get_brightness()[0] - 20))
-        return True
+        cur = sbc.get_brightness()[0]
+        new = max(0, cur - 20)
+        sbc.set_brightness(new)
+        return f"Яркость {new}%."
     except Exception:
         os.system("powershell (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,[math]::Max(0,((Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness)-20))")
-        return True
+        return "Яркость уменьшена."
 
-def switch_window():
-    import pyautogui; pyautogui.hotkey("alt","tab"); return True
-def window_minimize():
-    import pyautogui; pyautogui.hotkey("win","d"); return True
-def window_maximize():
-    import pyautogui; pyautogui.hotkey("win","up"); return True
-def window_close():
-    import pyautogui; pyautogui.hotkey("alt","f4"); return True
-def clipboard_copy():
-    import pyautogui; pyautogui.hotkey("ctrl","c"); return True
-def clipboard_paste():
-    import pyautogui; pyautogui.hotkey("ctrl","v"); return True
 
-def clipboard_write():
-    speak("Что записать?")
-    t = listen_fn()
-    if not t:
-        return False
+def wifi_toggle_on() -> str:
+    os.system('netsh interface set interface "Wi-Fi" enabled')
+    return "WiFi включён."
+
+
+def wifi_toggle_off() -> str:
+    os.system('netsh interface set interface "Wi-Fi" disabled')
+    return "WiFi выключен."
+
+
+def wifi_toggle() -> str:
+    """Переключает WiFi в зависимости от текущего состояния."""
+    if _wifi_status():
+        os.system('netsh interface set interface "Wi-Fi" disabled')
+        return "WiFi выключен."
+    else:
+        os.system('netsh interface set interface "Wi-Fi" enabled')
+        return "WiFi включён."
+
+
+def screenshot() -> str:
     try:
-        import pyperclip; pyperclip.copy(t); return True
+        import pyautogui
+        fname = f"screenshot_{int(time.time())}.png"
+        pyautogui.screenshot(fname)
+        return "Скриншот сохранён."
     except Exception:
-        return False
+        return None
 
-def get_battery():
+
+def clipboard_copy() -> str:
+    import pyautogui
+    pyautogui.hotkey("ctrl", "c")
+    return "Скопировано."
+
+
+def clipboard_paste() -> str:
+    import pyautogui
+    pyautogui.hotkey("ctrl", "v")
+    return "Вставлено."
+
+
+def clipboard_read() -> str:
+    try:
+        import pyperclip
+        t = pyperclip.paste()
+        return f"В буфере: {t[:200]}" if t else "Буфер пуст."
+    except Exception:
+        return None
+
+
+def switch_window() -> str:
+    import pyautogui
+    pyautogui.hotkey("alt", "tab")
+    return "Переключаю."
+
+
+def window_minimize() -> str:
+    import pyautogui
+    pyautogui.hotkey("win", "d")
+    return "Окна свёрнуты."
+
+
+def window_maximize() -> str:
+    import pyautogui
+    pyautogui.hotkey("win", "up")
+    return "Окно развёрнуто."
+
+
+def window_close() -> str:
+    import pyautogui
+    pyautogui.hotkey("alt", "f4")
+    return "Окно закрыто."
+
+
+def get_battery() -> str:
     try:
         import psutil
         b = psutil.sensors_battery()
         if b is None:
-            speak("Батарея не найдена.")
-        else:
-            speak(f"Заряд {int(b.percent)}%, {'заряжается' if b.power_plugged else 'на батарее'}.")
-        return True
+            return "Батарея не найдена."
+        status = "заряжается" if b.power_plugged else "на батарее"
+        return f"Заряд {int(b.percent)}%, {status}."
     except Exception:
-        return False
+        return None
 
-def get_cpu():
+
+def get_cpu() -> str:
     try:
         import psutil
-        speak(f"Процессор {psutil.cpu_percent(interval=1)}%, память {psutil.virtual_memory().percent}%.")
-        return True
+        cpu = psutil.cpu_percent(interval=1)
+        ram = psutil.virtual_memory().percent
+        return f"Процессор {cpu}%, память {ram}%."
     except Exception:
-        return False
+        return None
 
-def wifi_off():
-    os.system('netsh interface set interface "Wi-Fi" disabled'); return True
-def wifi_on():
-    os.system('netsh interface set interface "Wi-Fi" enabled'); return True
 
-def get_weather():
-    speak("Какой город?")
-    city = listen_fn()
-    if not city:
-        return False
-    if not WEATHER_API_KEY:
-        speak("Добавь WEATHER_API_KEY в .env")
-        return False
+def open_app(name: str) -> str:
+    path = APP_PATHS.get(name.lower(), name).replace("%USERNAME%", os.environ.get("USERNAME", ""))
+    ru_name = APP_NAMES_RU.get(name.lower(), name.capitalize())
     try:
-        import urllib.request, urllib.parse
-        url = f"https://api.openweathermap.org/data/2.5/weather?q={urllib.parse.quote(city)}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
-        with urllib.request.urlopen(url, timeout=5) as r:
-            d = json.loads(r.read().decode())
-        speak(f"В {city}: {d['weather'][0]['description']}, {round(d['main']['temp'])}°, ощущается {round(d['main']['feels_like'])}°.")
-        return True
+        subprocess.Popen(path)
+        return f"{ru_name} открыт."
     except Exception:
-        speak("Не удалось получить погоду.")
-        return False
-
-def create_task():
-    speak("Что добавить?")
-    t = listen_fn()
-    if not t:
-        return False
-    with open("список дел.txt", "a", encoding="utf-8") as f:
-        f.write(f"✅ {t}\n")
-    speak(f"Добавила: {t}")
-    return True
-
-def show_tasks():
-    try:
-        with open("список дел.txt", encoding="utf-8") as f:
-            tasks = f.read().strip()
-        if not tasks:
-            speak("Список пуст.")
-        else:
-            lines = tasks.splitlines()
-            speak(f"Задач {len(lines)}: " + "; ".join(l.replace("✅ ","") for l in lines[:5]))
-        return True
-    except Exception:
-        return False
-
-def clear_tasks():
-    open("список дел.txt", "w", encoding="utf-8").close()
-    return True
-
-def play_music():
-    try:
-        files = [f for f in os.listdir("music") if f.endswith((".mp3",".wav",".flac"))]
-        if not files:
-            speak("В папке music нет файлов.")
-            return False
-        f = os.path.join("music", random.choice(files))
-        os.startfile(f)
-        speak(f"Включаю {os.path.splitext(os.path.basename(f))[0]}")
-        return True
-    except Exception:
-        return False
-
-def stop_music():
-    for p in ("wmplayer","vlc","spotify","groove","musicbee"):
         try:
-            subprocess.run(["powershell.exe", f"Stop-Process -Name {p} -ErrorAction SilentlyContinue"], check=False)
+            subprocess.Popen(path, shell=True)
+            return f"{ru_name} открыт."
+        except Exception:
+            return None
+
+
+def close_app(name: str) -> str:
+    pm = {
+        "telegram":"telegram","телеграм":"telegram","discord":"discord","дискорд":"discord",
+        "spotify":"spotify","спотифай":"spotify","chrome":"chrome","хром":"chrome",
+        "notepad":"notepad","блокнот":"notepad","word":"winword","excel":"excel",
+        "obs":"obs64","steam":"steam","vscode":"code","код":"code",
+    }
+    ru_name = APP_NAMES_RU.get(name.lower(), name.capitalize())
+    try:
+        subprocess.run(
+            ["powershell.exe", f"Stop-Process -Name {pm.get(name.lower(), name)} -ErrorAction SilentlyContinue"],
+            check=False
+        )
+        return f"{ru_name} закрыт."
+    except Exception:
+        return None
+
+
+def open_browser() -> str:
+    speak("Какой сайт?")
+    site = listen_fn()
+    if not site:
+        return None
+    url = f"https://{site}" if "." in site and " " not in site else f"https://www.google.com/search?q={site.replace(' ', '+')}"
+    webbrowser.open(url)
+    return f"Открываю {site}."
+
+
+def close_browser() -> str:
+    for b in ("chrome", "firefox", "msedge", "opera", "brave"):
+        try:
+            subprocess.run(
+                ["powershell.exe", f"Stop-Process -Name {b} -ErrorAction SilentlyContinue"],
+                check=False
+            )
         except Exception:
             pass
-    return True
+    return "Браузер закрыт."
 
-def set_timer(seconds: int):
-    def _t():
-        time.sleep(seconds)
-        speak("Таймер сработал!")
-    threading.Thread(target=_t, daemon=True).start()
-    m, s = divmod(seconds, 60)
-    speak(f"Таймер на {m} мин." if m else f"Таймер на {s} сек.")
-    return True
 
-def set_alarm(hour: int, minute: int):
-    global alarm_thread
-    def _a():
-        while True:
-            n = datetime.now()
-            if n.hour == hour and n.minute == minute:
-                speak(f"Будильник! {hour:02d}:{minute:02d}!")
-                break
-            time.sleep(20)
-    alarm_thread = threading.Thread(target=_a, daemon=True)
-    alarm_thread.start()
-    speak(f"Будильник на {hour:02d}:{minute:02d}.")
-    return True
-
-def stop_alarm():
-    global alarm_thread; alarm_thread = None; return True
-
-def break_reminder_on():
-    global break_reminder_active
-    if break_reminder_active:
-        speak("Уже включено.")
-        return True
-    break_reminder_active = True
-    def _r():
-        while break_reminder_active:
-            time.sleep(1800)
-            if break_reminder_active:
-                speak("Ты работаешь 30 минут. Перерыв!")
-    threading.Thread(target=_r, daemon=True).start()
-    return True
-
-def break_reminder_off():
-    global break_reminder_active
-    break_reminder_active = False
-    return True
-
-def shutdown():
-    os.system("shutdown /s /t 10")
-    speak("Выключаю через 10 секунд.")
-    return True
-
-def restart():
-    os.system("shutdown /r /t 10")
-    speak("Перезагружаю через 10 секунд.")
-    return True
-
-def sleep_pc():
-    os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
-    return True
-
-def cancel_shutdown():
-    os.system("shutdown /a")
-    return True
-
-def dictate():
-    speak("Говори — напечатаю")
-    t = listen_fn()
-    if not t:
-        return False
-    try:
-        import pyautogui, pyperclip
-        pyperclip.copy(t)
-        pyautogui.hotkey("ctrl","v")
-        return True
-    except Exception:
-        return False
-
-def find_file():
-    speak("Что ищем?")
-    name = listen_fn()
-    if not name:
-        return False
-    try:
-        r = subprocess.run(
-            ["powershell.exe", f"Get-ChildItem -Path $env:USERPROFILE -Recurse -Filter '*{name}*' -ErrorAction SilentlyContinue | Select-Object -First 3 FullName | Format-Table -HideTableHeaders"],
-            capture_output=True, text=True, timeout=10)
-        found = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
-        speak(f"Нашла: {found[0]}" if found else f"{name} не найден.")
-        return True
-    except Exception:
-        return False
-
-def open_folder(folder_name: str = ""):
+def open_folder(folder_name: str = "") -> str:
     folders = {
         "документы":    os.path.expanduser("~/Documents"),
         "загрузки":     os.path.expanduser("~/Downloads"),
@@ -826,56 +779,235 @@ def open_folder(folder_name: str = ""):
     path = folders.get(folder_name.lower(), folder_name)
     if os.path.exists(path):
         os.startfile(path)
-        return True
-    return False
+        name_cap = folder_name.capitalize()
+        return f"{name_cap} открыта."
+    return None
 
-def calculate(expression: str = ""):
+
+def get_weather() -> str:
+    speak("Какой город?")
+    city = listen_fn()
+    if not city:
+        return None
+    if not WEATHER_API_KEY:
+        return "Добавь WEATHER_API_KEY в .env."
+    try:
+        import urllib.request, urllib.parse
+        url = (f"https://api.openweathermap.org/data/2.5/weather"
+               f"?q={urllib.parse.quote(city)}&appid={WEATHER_API_KEY}&units=metric&lang=ru")
+        with urllib.request.urlopen(url, timeout=5) as r:
+            d = json.loads(r.read().decode())
+        return (f"В {city}: {d['weather'][0]['description']}, "
+                f"{round(d['main']['temp'])}°, ощущается {round(d['main']['feels_like'])}°.")
+    except Exception:
+        return "Не удалось получить погоду."
+
+
+def create_task() -> str:
+    speak("Что добавить?")
+    t = listen_fn()
+    if not t:
+        return None
+    with open("список дел.txt", "a", encoding="utf-8") as f:
+        f.write(f"✅ {t}\n")
+    return f"Добавила: {t}."
+
+
+def show_tasks() -> str:
+    try:
+        with open("список дел.txt", encoding="utf-8") as f:
+            tasks = f.read().strip()
+        if not tasks:
+            return "Список пуст."
+        lines = tasks.splitlines()
+        return f"Задач {len(lines)}: " + "; ".join(l.replace("✅ ", "") for l in lines[:5]) + "."
+    except Exception:
+        return None
+
+
+def clear_tasks() -> str:
+    open("список дел.txt", "w", encoding="utf-8").close()
+    return "Список очищен."
+
+
+def play_music() -> str:
+    try:
+        files = [f for f in os.listdir("music") if f.endswith((".mp3", ".wav", ".flac"))]
+        if not files:
+            return "В папке music нет файлов."
+        f = os.path.join("music", random.choice(files))
+        os.startfile(f)
+        name = os.path.splitext(os.path.basename(f))[0]
+        return f"Включаю {name}."
+    except Exception:
+        return None
+
+
+def stop_music() -> str:
+    for p in ("wmplayer", "vlc", "spotify", "groove", "musicbee"):
+        try:
+            subprocess.run(
+                ["powershell.exe", f"Stop-Process -Name {p} -ErrorAction SilentlyContinue"],
+                check=False
+            )
+        except Exception:
+            pass
+    return "Музыка остановлена."
+
+
+def set_timer(seconds: int) -> str:
+    def _t():
+        time.sleep(seconds)
+        speak("Таймер сработал!")
+    threading.Thread(target=_t, daemon=True).start()
+    m, s = divmod(seconds, 60)
+    return f"Таймер на {m} мин." if m else f"Таймер на {s} сек."
+
+
+def set_alarm(hour: int, minute: int) -> str:
+    global alarm_thread
+    def _a():
+        while True:
+            n = datetime.now()
+            if n.hour == hour and n.minute == minute:
+                speak(f"Будильник! {hour:02d}:{minute:02d}!")
+                break
+            time.sleep(20)
+    alarm_thread = threading.Thread(target=_a, daemon=True)
+    alarm_thread.start()
+    return f"Будильник на {hour:02d}:{minute:02d}."
+
+
+def stop_alarm() -> str:
+    global alarm_thread
+    alarm_thread = None
+    return "Будильник отключён."
+
+
+def break_reminder_on() -> str:
+    global break_reminder_active
+    if break_reminder_active:
+        return "Напоминания уже включены."
+    break_reminder_active = True
+    def _r():
+        while break_reminder_active:
+            time.sleep(1800)
+            if break_reminder_active:
+                speak("Ты работаешь 30 минут. Перерыв!")
+    threading.Thread(target=_r, daemon=True).start()
+    return "Напоминания о перерывах включены."
+
+
+def break_reminder_off() -> str:
+    global break_reminder_active
+    break_reminder_active = False
+    return "Напоминания выключены."
+
+
+def shutdown() -> str:
+    os.system("shutdown /s /t 10")
+    return "Выключаю через 10 секунд."
+
+
+def restart() -> str:
+    os.system("shutdown /r /t 10")
+    return "Перезагружаю через 10 секунд."
+
+
+def sleep_pc() -> str:
+    os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+    return "Спящий режим."
+
+
+def cancel_shutdown() -> str:
+    os.system("shutdown /a")
+    return "Выключение отменено."
+
+
+def dictate() -> str:
+    speak("Говори — напечатаю.")
+    t = listen_fn()
+    if not t:
+        return None
+    try:
+        import pyautogui, pyperclip
+        pyperclip.copy(t)
+        pyautogui.hotkey("ctrl", "v")
+        return "Напечатала."
+    except Exception:
+        return None
+
+
+def find_file() -> str:
+    speak("Что ищем?")
+    name = listen_fn()
+    if not name:
+        return None
+    try:
+        r = subprocess.run(
+            ["powershell.exe",
+             f"Get-ChildItem -Path $env:USERPROFILE -Recurse -Filter '*{name}*' "
+             f"-ErrorAction SilentlyContinue | Select-Object -First 3 FullName | Format-Table -HideTableHeaders"],
+            capture_output=True, text=True, timeout=10
+        )
+        found = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
+        return f"Нашла: {found[0]}." if found else f"{name} не найден."
+    except Exception:
+        return None
+
+
+def remind_me(minutes: int, text: str = "Напоминание!") -> str:
+    def _r():
+        time.sleep(minutes * 60)
+        speak(f"Напоминаю: {text}")
+    threading.Thread(target=_r, daemon=True).start()
+    return f"Напомню через {minutes} мин."
+
+
+def calculate(expression: str = "") -> str:
     replacements = {
-        "плюс":"+","минус":"-","умножить на":"*","умножить":"*",
-        "разделить на":"/","разделить":"/","в степени":"**",
+        "плюс": "+", "минус": "-", "умножить на": "*", "умножить": "*",
+        "разделить на": "/", "разделить": "/", "в степени": "**",
     }
     expr = expression.lower()
     for w, op in replacements.items():
         expr = expr.replace(w, op)
     safe = "".join(c for c in expr if c in "0123456789+-*/(). ").strip()
     if not safe:
-        return False
+        return None
     try:
         result = eval(safe)
         if isinstance(result, float) and result == int(result):
             result = int(result)
-        speak(f"{expression} равно {result}")
-        return True
+        return f"{expression} равно {result}."
     except Exception:
-        return False
+        return None
 
-def remind_me(minutes: int, text: str = "Напоминание!"):
-    def _r():
-        time.sleep(minutes * 60)
-        speak(f"Напоминаю: {text}")
-    threading.Thread(target=_r, daemon=True).start()
-    speak(f"Напомню через {minutes} мин.")
-    return True
 
 def break_code():
     speak("До встречи!")
     exit()
 
 
-def execute_command(cmd: str, query: str = "") -> bool:
+def execute_command(cmd: str, query: str = "") -> str | None:
+    """
+    Возвращает строку — ответ который Лора озвучит.
+    None — команда не выполнена, говорим 'не поняла'.
+    """
     if cmd.startswith("open_folder:"):
-        return open_folder(cmd.split(":",1)[1])
+        return open_folder(cmd.split(":", 1)[1])
     if cmd.startswith("open_app:"):
-        return open_app(cmd.split(":",1)[1])
+        return open_app(cmd.split(":", 1)[1])
+    if cmd == "ping":
+        return random.choice(["Да?", "Я здесь.", "Слушаю."])
     if cmd == "mute":
         global is_muted
         is_muted = True
         stop_speech()
-        return True
+        return ""  # молчим при муте
     if cmd == "unmute":
         is_muted = False
-        play_cached("listening_again")
-        return True
+        return "Снова слушаю."
     if cmd == "set_timer":
         nums = re.findall(r'\d+', query)
         return set_timer(int(nums[0]) * 60 if nums else 60)
@@ -885,7 +1017,7 @@ def execute_command(cmd: str, query: str = "") -> bool:
             return set_alarm(int(nums[0]), int(nums[1]))
         elif len(nums) == 1:
             return set_alarm(int(nums[0]), 0)
-        return False
+        return None
     if cmd == "calculate":
         return calculate(query)
     if cmd == "remind_me":
@@ -895,25 +1027,27 @@ def execute_command(cmd: str, query: str = "") -> bool:
     dispatch = {
         "get_time":          get_time,
         "get_date":          get_date,
-        "screenshot":        screenshot,
-        "clipboard_read":    clipboard_read,
         "volume_up":         volume_up,
         "volume_down":       volume_down,
+        "volume_max":        volume_max,
+        "volume_min":        volume_min,
         "sound_off":         sound_off,
         "sound_on":          sound_on,
         "brightness_up":     brightness_up,
         "brightness_down":   brightness_down,
+        "wifi_toggle":       wifi_toggle,
+        "wifi_toggle_on":    wifi_toggle_on,
+        "wifi_toggle_off":   wifi_toggle_off,
+        "screenshot":        screenshot,
+        "clipboard_copy":    clipboard_copy,
+        "clipboard_paste":   clipboard_paste,
+        "clipboard_read":    clipboard_read,
         "switch_window":     switch_window,
         "window_minimize":   window_minimize,
         "window_maximize":   window_maximize,
         "window_close":      window_close,
-        "clipboard_copy":    clipboard_copy,
-        "clipboard_paste":   clipboard_paste,
-        "clipboard_write":   clipboard_write,
         "get_battery":       get_battery,
         "get_cpu":           get_cpu,
-        "wifi_on":           wifi_on,
-        "wifi_off":          wifi_off,
         "get_weather":       get_weather,
         "play_music":        play_music,
         "stop_music":        stop_music,
@@ -935,7 +1069,7 @@ def execute_command(cmd: str, query: str = "") -> bool:
         "break_code":        break_code,
     }
     fn = dispatch.get(cmd)
-    return fn() if fn else False
+    return fn() if fn else None
 
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
@@ -948,16 +1082,12 @@ def main():
     if not os.path.exists("список дел.txt"):
         open("список дел.txt", "w", encoding="utf-8").close()
 
-    # Генерируем кеш фраз
     _generate_cache()
 
-    # ── Слушалка после wake word ──
-    # Используем Google SR как fallback — WSR занят грамматикой команд
     def _listen(timeout=8) -> str | None:
         return listen_google(timeout)
     listen_fn = _listen
 
-    # ── Проверка Porcupine ──
     if not PICOVOICE_KEY:
         print("  [!] Добавь PICOVOICE_KEY в .env")
         exit(1)
@@ -965,21 +1095,20 @@ def main():
         print(f"  [!] Файл не найден: {PPN_PATH}")
         exit(1)
 
-    # ── WSR грамматика ──
-    all_phrases = list(LOCAL_COMMANDS.keys())
+    # WSR грамматика
+    use_wsr = False
     if WSR_AVAILABLE:
         try:
-            wsr = WSRListener(all_phrases)
-            print(f"  [wsr] Грамматика загружена — {len(all_phrases)} фраз")
+            wsr = WSRListener(list(LOCAL_COMMANDS.keys()))
+            print(f"  [wsr] Грамматика загружена — {len(LOCAL_COMMANDS)} фраз")
             use_wsr = True
         except Exception as e:
             print(f"  [!] WSR недоступен: {e}")
-            use_wsr = False
-    else:
-        print("  [!] pywin32 не установлен — pip install pywin32")
-        use_wsr = False
 
-    # ── Porcupine ──
+    if not use_wsr:
+        print("  [!] Используется Google SR как fallback")
+
+    # Porcupine
     porcupine = pvporcupine.create(
         access_key=PICOVOICE_KEY,
         keyword_paths=[PPN_PATH],
@@ -992,18 +1121,27 @@ def main():
     print("  Говори 'Эй Лора'.\n")
 
     def _process(query: str):
-        global is_muted, last_activation
+        global is_muted
 
         if is_speaking:
             stop_speech()
-            time.sleep(0.05)
 
         query = query.lower().strip()
-        print(f"  [cmd] {query}")
 
-        # Стоп-триггеры
         if any(w in query for w in STOP_TRIGGERS):
             break_code()
+
+        # "лора" в середине диалога — просто подтверждение присутствия
+        if query in ("лора", "эй лора", "hey lora"):
+            speak(random.choice(["Да?", "Я здесь.", "Слушаю."]))
+            return
+
+        # Размут — всегда первым
+        if any(w in query for w in UNMUTE_TRIGGERS):
+            if is_muted:
+                is_muted = False
+                speak(random.choice(["Снова слушаю.", "Да?", "Я здесь."]))
+            return
 
         # Мут
         if any(w in query for w in MUTE_TRIGGERS):
@@ -1011,25 +1149,29 @@ def main():
             stop_speech()
             return
 
-        # Размут
         if is_muted:
-            if any(w in query for w in UNMUTE_TRIGGERS):
-                is_muted = False
-                play_cached("listening_again")
             return
 
-        # Ищем команду — точное совпадение (WSR уже выдал нужную фразу)
+        # Ищем команду — точное совпадение
         cmd = LOCAL_COMMANDS.get(query)
+
+        # Частичное совпадение если WSR недоступен
+        if not cmd:
+            for phrase, c in LOCAL_COMMANDS.items():
+                if phrase in query or query in phrase:
+                    cmd = c
+                    break
 
         if cmd:
             result = execute_command(cmd, query)
-            if result:
-                play_cached_random("confirm")
+            if result is None:
+                play_unclear()
+            elif result == "":
+                pass  # мут — молчим
             else:
-                play_cached_random("unclear")
+                speak(result)
         else:
-            # WSR не должен выдавать неизвестные фразы, но на всякий случай
-            play_cached_random("unclear")
+            play_unclear()
 
     try:
         while True:
@@ -1038,9 +1180,7 @@ def main():
                 recorder.stop()
                 play_wake()
                 last_active = time.time()
-                time.sleep(0.15)
 
-                # Слушаем команду
                 if use_wsr:
                     cmd_text = wsr.listen(timeout=6)
                 else:
@@ -1055,7 +1195,7 @@ def main():
                 _process(cmd_text)
                 last_active = time.time()
 
-                # Окно активности — слушаем продолжение без wake word
+                # Окно активности
                 while (time.time() - last_active) < WINDOW_AFTER_AI:
                     if use_wsr:
                         followup = wsr.listen(timeout=2)
