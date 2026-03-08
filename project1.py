@@ -50,6 +50,7 @@ alarm_thread        = None
 break_reminder_active = False
 WINDOW_AFTER_AI     = 12
 _first_activation   = True   # первое "эй лора" за сессию
+_vosk_listener      = None   # ссылка для свободной речи
 
 WAKE_PHRASES  = ["Слушаю.", "Да.", "Здесь."]
 MUTE_TRIGGERS = (
@@ -231,6 +232,8 @@ class VoskListener:
         grammar        = json.dumps(phrases + ["[unk]"], ensure_ascii=False)
         self._rec      = vosk.KaldiRecognizer(self._model, self.SAMPLE_RATE, grammar)
         self._rec.SetWords(True)
+        # Второй recognizer без грамматики — для свободной речи (вопросы в ИИ)
+        self._rec_free = vosk.KaldiRecognizer(self._model, self.SAMPLE_RATE)
         print(f"  [vosk] Готов, фраз в грамматике: {len(phrases)}")
 
     def listen(self, timeout: float = 8) -> str | None:
@@ -260,6 +263,34 @@ class VoskListener:
 
         text = json.loads(self._rec.FinalResult()).get("text", "").strip()
         return text if text and text != "[unk]" else None
+
+    def listen_free(self, timeout: float = 8) -> str | None:
+        """Слушает без грамматики — для свободных вопросов в ИИ."""
+        self._rec_free.Reset()
+        q  = queue.Queue()
+        t0 = time.time()
+
+        def _cb(indata, frames, t, status):
+            q.put(bytes(indata))
+
+        with sd.RawInputStream(
+            samplerate=self.SAMPLE_RATE,
+            blocksize=self.BLOCK_SIZE,
+            dtype="int16", channels=1,
+            callback=_cb
+        ):
+            while time.time() - t0 < timeout:
+                try:
+                    data = q.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                if self._rec_free.AcceptWaveform(data):
+                    text = json.loads(self._rec_free.Result()).get("text", "").strip()
+                    if text:
+                        return text
+
+        text = json.loads(self._rec_free.FinalResult()).get("text", "").strip()
+        return text if text else None
 
 
 # ─── TTS ────────────────────────────────────────────────────────────────────
@@ -961,6 +992,8 @@ def main():
     # Vosk
     vosk_listener = VoskListener(list(LOCAL_COMMANDS.keys()))
     listen_fn = lambda timeout=8: vosk_listener.listen(timeout)
+    global _vosk_listener
+    _vosk_listener = vosk_listener
 
     # Porcupine
     porcupine = pvporcupine.create(
@@ -1037,7 +1070,18 @@ def main():
             else:
                 speak(result)
         else:
-            play_unclear()
+            # Команда не найдена → Groq если включён
+            if AI_ENABLED and _vosk_listener:
+                # Переслушиваем без грамматики чтобы получить точный текст вопроса
+                free_text = _vosk_listener.listen_free(timeout=5)
+                full_query = (query + " " + free_text).strip() if free_text else query
+                ai_reply = ask_ai(full_query)
+                if ai_reply:
+                    speak(ai_reply)
+                else:
+                    play_unclear()
+            else:
+                play_unclear()
 
     try:
         while True:
