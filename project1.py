@@ -1221,10 +1221,11 @@ def _process(query):
     if any(w in query for w in STOP_TRIGGERS):
         break_code()
 
+    print(f"  \033[3myou   {query}\033[0m")
+
     if any(w in query for w in UNMUTE_TRIGGERS):
         if is_muted:
             is_muted = False
-            print("  lora  Снова слушаю.")
             play("unmuted")
         return
 
@@ -1243,10 +1244,8 @@ def _process(query):
 
     if is_muted: return
 
-    print(f"  you   {query}")
-
     cmd, score = _find_command(query)
-    print(f"  conf  {score}%  →  {cmd}")
+    print(f"  \033[3mconf  {score}%  →  {cmd}\033[0m")
 
     # Зона 1: уверенно → выполняем сразу
     if score >= CONFIDENCE_EXECUTE and cmd:
@@ -1360,6 +1359,12 @@ def main():
 
                 _process(cmd_text)
                 last_active = time.time()
+
+                # Если после команды вошли в мут — слушаем размут без wake word
+                while is_muted:
+                    mute_text = vosk_listener.listen(timeout=5)
+                    if mute_text:
+                        _process(mute_text)
 
                 while (time.time() - last_active) < WINDOW_AFTER_AI:
                     followup = vosk_listener.listen(timeout=2)
