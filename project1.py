@@ -32,13 +32,14 @@ EDGE_VOICE      = os.getenv("EDGE_VOICE", "ru-RU-SvetlanaNeural")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")
 MODEL_PATH      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
 
-# ── ИИ отключён временно, не удалять ────────────────────────────────────────
-AI_ENABLED = False
+# ── ИИ — включается автоматически если есть GROQ_API_KEY в .env ─────────────
 try:
     from groq import Groq
     _groq_client = Groq(api_key=os.getenv("GROQ_API_KEY")) if os.getenv("GROQ_API_KEY") else None
+    AI_ENABLED = _groq_client is not None
 except ImportError:
     _groq_client = None
+    AI_ENABLED = False
 
 pygame.mixer.init()
 
@@ -1001,10 +1002,27 @@ def main():
 
         if is_muted: return
 
-        # Точное совпадение (Vosk с грамматикой даёт именно фразу из словаря)
+        # 1. Точное совпадение
         cmd = LOCAL_COMMANDS.get(query)
 
-        # Частичное совпадение на случай небольших отклонений
+        # 2. Rapidfuzz — нечёткое совпадение
+        if not cmd:
+            try:
+                from rapidfuzz import process, fuzz
+                # token_set_ratio хорошо работает с перестановкой слов
+                # "открой гугл хром" → "открой хром" ✓
+                match = process.extractOne(
+                    query,
+                    LOCAL_COMMANDS.keys(),
+                    scorer=fuzz.token_set_ratio,
+                    score_cutoff=72,
+                )
+                if match:
+                    cmd = LOCAL_COMMANDS[match[0]]
+            except ImportError:
+                pass
+
+        # 3. Частичное совпадение как последний fallback
         if not cmd:
             for phrase, c in LOCAL_COMMANDS.items():
                 if phrase in query or query in phrase:
