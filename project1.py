@@ -73,8 +73,8 @@ CACHED_PHRASES = {
 _phrase_cache: dict[str, str] = {}
 
 APP_PATHS = {
-    "telegram":    os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Telegram Desktop\Telegram.exe"),
-    "телеграм":    os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Telegram Desktop\Telegram.exe"),
+    "telegram":    os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Telegram\Telegram.exe"),
+    "телеграм":    os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Telegram\Telegram.exe"),
     "discord":     os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Local\Discord\Update.exe"),
     "дискорд":     os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Local\Discord\Update.exe"),
     "spotify":     os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Spotify\Spotify.exe"),
@@ -131,7 +131,7 @@ LOCAL_COMMANDS = {
     "сверни окно":"window_minimize","сверни все":"window_minimize",
     "сверни всё":"window_minimize","убери все окна":"window_minimize",
     "разверни окно":"window_maximize","закрой окно":"window_close",
-    "переключи окно":"switch_window","альт таб":"switch_window",
+    "переключи окно":"switch_window","альт таб":"switch_window","переключить окно":"switch_window",
     # Буфер
     "скопируй":"clipboard_copy","вставь":"clipboard_paste","что в буфере":"clipboard_read",
     # Скриншот
@@ -167,6 +167,12 @@ LOCAL_COMMANDS = {
     "открой музыку":"open_folder:музыка",
     "открой видео":"open_folder:видео",
     "открой изображения":"open_folder:изображения",
+    # Таймер и будильник
+    "таймер":"set_timer",
+    "поставь таймер":"set_timer",
+    "поставь будильник":"set_alarm",
+    "будильник":"stop_alarm",
+    "отключи будильник":"stop_alarm",
     # Питание
     "выключи компьютер":"shutdown","перезагрузи":"restart",
     "перезагрузка":"restart","спящий режим":"sleep","отмени выключение":"cancel_shutdown",
@@ -286,7 +292,6 @@ def play_cached(key: str):
         _log_lora(CACHED_PHRASES.get(key, key))
         _play_file(_phrase_cache[key])
     elif key in CACHED_PHRASES:
-        _log_lora(CACHED_PHRASES[key])
         speak(CACHED_PHRASES[key])
 
 
@@ -297,9 +302,7 @@ def play_unclear():
         _log_lora(CACHED_PHRASES.get(chosen, chosen))
         _play_file(_phrase_cache[chosen])
     else:
-        msg = random.choice(["Не поняла", "Повтори пожалуйста", "Не расслышала"])
-        _log_lora(msg)
-        speak(msg)
+        speak(random.choice(["Не поняла", "Повтори пожалуйста", "Не расслышала"]))
 
 
 def play_wake():
@@ -311,39 +314,103 @@ def play_wake():
         speak(random.choice(WAKE_PHRASES))
 
 
+# ─── Silero TTS ─────────────────────────────────────────────────────────────
+_silero_model  = None
+_silero_sample = 48000
+
+def _init_silero():
+    global _silero_model, _silero_sample
+    try:
+        import torch
+        device = torch.device("cpu")
+        model, _ = torch.hub.load(
+            repo_or_dir="snakers4/silero-models",
+            model="silero_tts",
+            language="ru",
+            speaker="v4_ru",
+            verbose=False,
+        )
+        model.to(device)
+        _silero_model  = model
+        _silero_sample = 48000
+        print("  [tts] Silero загружен")
+        return True
+    except Exception as e:
+        print(f"  [!] Silero недоступен: {e}")
+        return False
+
+def _speak_silero(text: str):
+    """Синтез через Silero — офлайн ~100-200мс."""
+    global is_speaking
+    is_speaking = True
+    stop_speaking_event.clear()
+    try:
+        import torch
+        audio = _silero_model.apply_tts(
+            text=text,
+            speaker="baya",        # женский голос
+            sample_rate=_silero_sample,
+            put_accent=True,
+            put_yo=True,
+        )
+        # audio — tensor float32, конвертируем в int16 для pygame
+        import numpy as np
+        audio_np = (audio.numpy() * 32767).astype("int16")
+        # pygame stereo требует 2D массив (samples, 2)
+        audio_np = np.column_stack([audio_np, audio_np])
+        sound = pygame.sndarray.make_sound(audio_np)
+        channel = sound.play()
+        while channel.get_busy():
+            if stop_speaking_event.is_set():
+                channel.stop()
+                break
+            pygame.time.Clock().tick(10)
+    except Exception:
+        _speak_edge(text)   # fallback
+    finally:
+        is_speaking = False
+
+def _speak_edge(text: str):
+    """Fallback — edge-tts через интернет."""
+    global is_speaking
+    is_speaking = True
+    stop_speaking_event.clear()
+    tmp = None
+    try:
+        async def _synth():
+            tts = edge_tts.Communicate(text, EDGE_VOICE)
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                t = f.name
+            await tts.save(t)
+            return t
+        tmp = asyncio.run(_synth())
+        if tmp and not stop_speaking_event.is_set():
+            pygame.mixer.music.load(tmp)
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                if stop_speaking_event.is_set():
+                    pygame.mixer.music.stop()
+                    break
+                pygame.time.Clock().tick(10)
+            pygame.mixer.music.unload()
+    except Exception:
+        pass
+    finally:
+        is_speaking = False
+        if tmp:
+            try: os.unlink(tmp)
+            except Exception: pass
+
 def speak(text: str):
     global is_speaking
     if not text: return
+    _log_lora(text)
 
     def _worker():
-        global is_speaking
-        is_speaking = True
-        stop_speaking_event.clear()
-        tmp = None
-        try:
-            async def _synth():
-                tts = edge_tts.Communicate(text, EDGE_VOICE)
-                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                    t = f.name
-                await tts.save(t)
-                return t
-            tmp = asyncio.run(_synth())
-            if tmp and not stop_speaking_event.is_set():
-                pygame.mixer.music.load(tmp)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    if stop_speaking_event.is_set():
-                        pygame.mixer.music.stop()
-                        break
-                    pygame.time.Clock().tick(10)
-                pygame.mixer.music.unload()
-        except Exception as e:
-            print(f"  [!] TTS: {e}")
-        finally:
-            is_speaking = False
-            if tmp:
-                try: os.unlink(tmp)
-                except Exception: pass
+        if _silero_model is not None:
+            _speak_silero(text)
+        else:
+            _speak_edge(text)
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
@@ -802,6 +869,7 @@ def main():
         open("список дел.txt","w",encoding="utf-8").close()
 
     _generate_cache()
+    _init_silero()
     _vol_init()
 
     if not PICOVOICE_KEY:
@@ -837,7 +905,6 @@ def main():
         # Пинг — "лора" в середине диалога
         if "лора" in query or "lora" in query:
             reply = random.choice(["Да?", "Я здесь.", "Слушаю."])
-            _log_lora(reply)
             speak(reply); return
 
         # Размут — до проверки мута
@@ -845,7 +912,6 @@ def main():
             if is_muted:
                 is_muted = False
                 reply = random.choice(["Снова слушаю.", "Да?", "Я здесь."])
-                _log_lora(reply)
                 speak(reply)
             return
 
@@ -864,8 +930,6 @@ def main():
                 if phrase in query or query in phrase:
                     cmd = c; break
 
-        ms = int((time.time() - t0) * 1000)
-
         if cmd:
             result = execute_command(cmd, query)
             if result is None:
@@ -873,7 +937,6 @@ def main():
             elif result == "":
                 pass   # мут — молчим
             else:
-                _log_lora(result, ms)
                 speak(result)
         else:
             play_unclear()
@@ -884,6 +947,8 @@ def main():
             if porcupine.process(pcm) >= 0:
                 recorder.stop()
                 _log_you("эй лора")
+                if is_muted:
+                    is_muted = False
                 play_wake()
                 last_active = time.time()
 
