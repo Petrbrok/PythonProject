@@ -48,6 +48,7 @@ stop_speaking_event = threading.Event()
 alarm_thread        = None
 break_reminder_active = False
 WINDOW_AFTER_AI     = 12
+_first_activation   = True   # первое "эй лора" за сессию
 
 WAKE_PHRASES  = ["Слушаю.", "Да.", "Здесь."]
 MUTE_TRIGGERS = (
@@ -178,6 +179,14 @@ LOCAL_COMMANDS = {
     "перезагрузка":"restart","спящий режим":"sleep","отмени выключение":"cancel_shutdown",
     # Перерывы
     "включи перерывы":"break_reminder_on","выключи перерывы":"break_reminder_off",
+    # Режимы
+    "ночной режим":"mode_night",
+    "включи ночной режим":"mode_night",
+    "режим презентации":"mode_presentation",
+    "презентация":"mode_presentation",
+    "режим презентация":"mode_presentation",
+    "утренний режим":"mode_morning",
+    "доброе утро":"mode_morning",
     # Мут/размут/пинг
     "замолчи":"mute","молчи":"mute","мут":"mute","тихо":"mute",
     "лора":"ping",
@@ -810,6 +819,74 @@ def calculate(expression: str = "") -> str:
 def break_code(): speak("До встречи!"); exit()
 
 
+# ─── РЕЖИМЫ ─────────────────────────────────────────────────────────────────
+
+def mode_night() -> str:
+    brightness_down(); brightness_down(); brightness_down()
+    try:
+        # Night Light Windows
+        subprocess.run([
+            "powershell", "-Command",
+            "Set-ItemProperty -Path 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion"
+            "\\Notifications\\Settings' -Name 'NOC_GLOBAL_SETTING_TOASTS_ENABLED' -Value 0 -Force"
+        ], check=False, capture_output=True)
+    except Exception:
+        pass
+    return "Ночной режим. Яркость снижена, уведомления отключены."
+
+
+def mode_presentation() -> str:
+    brightness_up(); brightness_up()
+    try:
+        subprocess.Popen(
+            APP_PATHS.get("powerpoint", ""),
+            shell=True
+        )
+    except Exception:
+        pass
+    time.sleep(0.5)
+    open_app("телеграм")
+    time.sleep(0.5)
+    open_folder("загрузки")
+    time.sleep(0.5)
+    webbrowser.open("https://gamma.app")
+    # Отключить уведомления
+    try:
+        subprocess.run([
+            "powershell", "-Command",
+            "Set-ItemProperty -Path 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion"
+            "\\Notifications\\Settings' -Name 'NOC_GLOBAL_SETTING_TOASTS_ENABLED' -Value 0 -Force"
+        ], check=False, capture_output=True)
+    except Exception:
+        pass
+    return "Режим презентации. PowerPoint, Телеграм, загрузки и Gamma открыты."
+
+
+def mode_morning() -> str:
+    brightness_up(); brightness_up(); brightness_up()
+    open_app("хром")
+    time.sleep(0.5)
+    open_app("телеграм")
+    mo = ["января","февраля","марта","апреля","мая","июня",
+          "июля","августа","сентября","октября","ноября","декабря"]
+    n  = datetime.now()
+    wd = ["понедельник","вторник","среда","четверг","пятница","суббота","воскресенье"][n.weekday()]
+    return f"Доброе утро! Сейчас {n.strftime('%H:%M')}, {wd} {n.day} {mo[n.month-1]}. Хром и Телеграм открыты."
+
+
+def _first_greeting() -> str:
+    mo = ["января","февраля","марта","апреля","мая","июня",
+          "июля","августа","сентября","октября","ноября","декабря"]
+    n  = datetime.now()
+    wd = ["понедельник","вторник","среда","четверг","пятница","суббота","воскресенье"][n.weekday()]
+    h  = n.hour
+    if h < 6:   gr = "Доброй ночи"
+    elif h < 12: gr = "Доброе утро"
+    elif h < 18: gr = "Добрый день"
+    else:        gr = "Добрый вечер"
+    return f"{gr}! Сейчас {n.strftime('%H:%M')}, {wd} {n.day} {mo[n.month-1]}. Чем могу помочь?"
+
+
 def execute_command(cmd: str, query: str = "") -> str | None:
     if cmd.startswith("open_folder:"): return open_folder(cmd.split(":",1)[1])
     if cmd.startswith("open_app:"):    return open_app(cmd.split(":",1)[1])
@@ -853,6 +930,9 @@ def execute_command(cmd: str, query: str = "") -> str | None:
         "cancel_shutdown":cancel_shutdown,"stop_alarm":stop_alarm,
         "break_reminder_on":break_reminder_on,"break_reminder_off":break_reminder_off,
         "break_code":break_code,
+        "mode_night":mode_night,
+        "mode_presentation":mode_presentation,
+        "mode_morning":mode_morning,
     }
     fn = dispatch.get(cmd)
     return fn() if fn else None
