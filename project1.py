@@ -1021,23 +1021,14 @@ def break_code():
 
 def _find_command(query):
     """Возвращает (cmd, score 0-100)."""
+    # Точное совпадение
     if query in LOCAL_COMMANDS:
         return LOCAL_COMMANDS[query], 100
 
-    try:
-        from rapidfuzz import process, fuzz
-        match = process.extractOne(
-            query, LOCAL_COMMANDS.keys(),
-            scorer=fuzz.WRatio,
-            score_cutoff=80)
-        if match:
-            return LOCAL_COMMANDS[match[0]], int(match[1])
-    except ImportError:
-        pass
-
-    for phrase, c in LOCAL_COMMANDS.items():
+    # Частичное: фраза из словаря содержится в запросе или наоборот
+    for phrase, cmd in LOCAL_COMMANDS.items():
         if phrase in query or query in phrase:
-            return c, 70
+            return cmd, 85
 
     return None, 0
 
@@ -1301,9 +1292,9 @@ def _process(query):
 _exit_event = threading.Event()
 
 def _keyboard_watcher():
-    """Отдельный поток: Escape/Пробел/Enter прерывают речь или завершают программу."""
+    """Отдельный поток: Escape прерывает речь или завершает программу."""
     def on_key(e):
-        if e.name in ("esc", "space", "enter"):
+        if e.name == "esc":
             if is_speaking:
                 stop_speech()
                 print("  [kbd] речь прервана")
@@ -1311,7 +1302,7 @@ def _keyboard_watcher():
                 print("  [kbd] завершение...")
                 _exit_event.set()
     keyboard.on_press(on_key)
-    _exit_event.wait()   # ждём сигнала выхода
+    _exit_event.wait()
     keyboard.unhook_all()
 
 
