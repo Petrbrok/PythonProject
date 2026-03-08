@@ -10,7 +10,7 @@ import webbrowser
 import re
 import queue
 import yaml
-from pynput import keyboard as kb
+import keyboard
 from datetime import datetime
 from dotenv import load_dotenv
 import edge_tts
@@ -67,8 +67,6 @@ APP_PATHS = {
     "телеграм":    os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Telegram Desktop\Telegram.exe"),
     "discord":     os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Local\Discord\Update.exe"),
     "дискорд":     os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Local\Discord\Update.exe"),
-    "spotify":     os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Spotify\Spotify.exe"),
-    "спотифай":    os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Spotify\Spotify.exe"),
     "chrome":      r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     "хром":        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     "notepad":     "notepad.exe",    "блокнот":     "notepad.exe",
@@ -77,21 +75,16 @@ APP_PATHS = {
     "проводник":   "explorer.exe",   "explorer":    "explorer.exe",
     "word":        r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
     "excel":       r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
-    "obs":         r"C:\Program Files\obs-studio\bin\64bit\obs64.exe",
     "steam":       r"C:\Program Files (x86)\Steam\steam.exe",
-    "vscode":      os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Local\Programs\Microsoft VS Code\Code.exe"),
-    "код":         os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Local\Programs\Microsoft VS Code\Code.exe"),
 }
 APP_NAMES_RU = {
     "телеграм":"Телеграм", "telegram":"Телеграм",
     "дискорд":"Дискорд",   "discord":"Дискорд",
-    "спотифай":"Спотифай", "spotify":"Спотифай",
     "хром":"Хром",         "chrome":"Хром",
     "блокнот":"Блокнот",   "notepad":"Блокнот",
     "калькулятор":"Калькулятор", "calculator":"Калькулятор",
     "проводник":"Проводник", "explorer":"Проводник",
     "стим":"Стим",         "steam":"Стим",
-    "obs":"OBS",           "код":"VS Code",  "vscode":"VS Code",
     "ворд":"Word",         "word":"Word",
     "эксель":"Excel",      "excel":"Excel",
 }
@@ -138,11 +131,9 @@ LOCAL_COMMANDS = {
     "открой браузер":"open_browser", "закрой браузер":"close_browser",
     "открой телеграм":"open_app:телеграм", "запусти телеграм":"open_app:телеграм",
     "открой дискорд":"open_app:дискорд",   "запусти дискорд":"open_app:дискорд",
-    "открой спотифай":"open_app:спотифай",
     "открой хром":"open_app:хром",         "запусти хром":"open_app:хром",
     "открой блокнот":"open_app:блокнот",   "открой калькулятор":"open_app:калькулятор",
     "открой проводник":"open_app:проводник","открой стим":"open_app:steam",
-    "открой obs":"open_app:obs",           "открой код":"open_app:код",
     "открой ворд":"open_app:word",         "открой эксель":"open_app:excel",
     "включи музыку":"play_music", "играй музыку":"play_music",
     "выключи музыку":"stop_music", "стоп музыка":"stop_music",
@@ -177,8 +168,13 @@ LOCAL_COMMANDS = {
     "режим презентации":"mode_presentation",
     "утренний режим":"mode_morning",
     "доброе утро":"mode_morning",
-    "лора":"ping",
     "замолчи":"mute", "мут":"mute", "молчи":"mute",
+    "закрой телеграм":"close_app:телеграм", "выйди из телеграма":"close_app:телеграм",
+    "закрой дискорд":"close_app:дискорд",   "выйди из дискорда":"close_app:дискорд",
+    "закрой хром":"close_app:хром",          "закрой браузер хром":"close_app:хром",
+    "закрой блокнот":"close_app:блокнот",
+    "закрой ворд":"close_app:word",          "закрой эксель":"close_app:excel",
+    "закрой стим":"close_app:steam",
     "размут":"unmute", "включись":"unmute", "слушай":"unmute",
     "какой сегодня праздник":"holiday", "что сегодня празднуют":"holiday",
     "день чего сегодня":"holiday", "какой праздник":"holiday",
@@ -810,6 +806,27 @@ def open_app(name):
         except Exception:
             return None
 
+def close_app(name):
+    process_map = {
+        "телеграм":"telegram", "telegram":"telegram",
+        "дискорд":"discord",   "discord":"discord",
+        "хром":"chrome",       "chrome":"chrome",
+        "блокнот":"notepad",   "notepad":"notepad",
+        "ворд":"winword",      "word":"winword",
+        "эксель":"excel",      "excel":"excel",
+        "стим":"steam",        "steam":"steam",
+    }
+    ru_name = APP_NAMES_RU.get(name.lower(), name.capitalize())
+    proc = process_map.get(name.lower(), name)
+    try:
+        subprocess.run(
+            ["powershell.exe", f"Stop-Process -Name {proc} -ErrorAction SilentlyContinue"],
+            check=False)
+        return f"{ru_name} закрыт."
+    except Exception:
+        return None
+
+
 def open_browser():
     speak("Какой сайт?"); site = listen_fn()
     if not site: return None
@@ -1011,7 +1028,8 @@ def _find_command(query):
         from rapidfuzz import process, fuzz
         match = process.extractOne(
             query, LOCAL_COMMANDS.keys(),
-            scorer=fuzz.token_set_ratio)
+            scorer=fuzz.WRatio,
+            score_cutoff=80)
         if match:
             return LOCAL_COMMANDS[match[0]], int(match[1])
     except ImportError:
@@ -1115,6 +1133,7 @@ def execute_command(cmd, query=""):
 
     if cmd.startswith("open_folder:"): return open_folder(cmd.split(":",1)[1])
     if cmd.startswith("open_app:"):    return open_app(cmd.split(":",1)[1])
+    if cmd.startswith("close_app:"):   return close_app(cmd.split(":",1)[1])
     if cmd == "ping":   play_random("ping"); return "_done_"
     if cmd == "mute":   is_muted = True; stop_speech(); return "_mute_"
     if cmd == "unmute": is_muted = False; return "unmuted"
@@ -1282,17 +1301,18 @@ def _process(query):
 _exit_event = threading.Event()
 
 def _keyboard_watcher():
-    def on_press(key):
-        if key in (kb.Key.esc, kb.Key.space, kb.Key.enter):
+    """Отдельный поток: Escape/Пробел/Enter прерывают речь или завершают программу."""
+    def on_key(e):
+        if e.name in ("esc", "space", "enter"):
             if is_speaking:
                 stop_speech()
                 print("  [kbd] речь прервана")
             else:
                 print("  [kbd] завершение...")
                 _exit_event.set()
-                return False  # останавливает listener
-    with kb.Listener(on_press=on_press) as listener:
-        _exit_event.wait()
+    keyboard.on_press(on_key)
+    _exit_event.wait()   # ждём сигнала выхода
+    keyboard.unhook_all()
 
 
 def main():
