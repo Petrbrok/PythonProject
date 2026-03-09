@@ -75,6 +75,8 @@ APP_PATHS = {
     "проводник":   "explorer.exe",   "explorer":    "explorer.exe",
     "word":        r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
     "excel":       r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
+    "powerpoint":  r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
+    "поверпоинт":  r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
     "steam":       r"C:\Program Files (x86)\Steam\steam.exe",
 }
 APP_NAMES_RU = {
@@ -87,6 +89,7 @@ APP_NAMES_RU = {
     "стим":"Стим",         "steam":"Стим",
     "ворд":"Word",         "word":"Word",
     "эксель":"Excel",      "excel":"Excel",
+    "поверпоинт":"PowerPoint", "powerpoint":"PowerPoint",
 }
 
 LOCAL_COMMANDS = {
@@ -187,6 +190,8 @@ LOCAL_COMMANDS = {
     "совет на день":"daily_tip", "что посоветуешь":"daily_tip",
     "подбрось монетку":"coin_flip", "орёл или решка":"coin_flip",
     "монетка":"coin_flip", "монету подброси":"coin_flip",
+    "подбрось монету":"coin_flip", "бросить монету":"coin_flip",
+    "подброс монеты":"coin_flip", "кинь монету":"coin_flip",
 }
 
 CMD_NAMES = {
@@ -322,6 +327,17 @@ def _play_file(path):
         pygame.mixer.music.unload()
     except Exception:
         pass
+
+_SFX_DIR = os.path.join("sounds", "sfx")
+
+def _play_sfx(name):
+    """Воспроизвести звуковой эффект из sounds/sfx/<name>.wav (или .mp3).
+    Если файл не найден — молча пропустить."""
+    for ext in ("wav", "mp3"):
+        path = os.path.join(_SFX_DIR, f"{name}.{ext}")
+        if os.path.exists(path):
+            threading.Thread(target=_play_file, args=(path,), daemon=True).start()
+            return
 
 
 def play(key):
@@ -683,6 +699,7 @@ def wifi_toggle():
 def screenshot():
     try:
         import pyautogui
+        _play_sfx("camera")
         pyautogui.screenshot(f"screenshot_{int(time.time())}.png")
     except Exception:
         pass
@@ -915,7 +932,7 @@ def stop_music():
             pass
 
 def set_timer(seconds):
-    def _t(): time.sleep(seconds); speak("Таймер сработал!")
+    def _t(): time.sleep(seconds); _play_sfx("timer"); speak("Таймер сработал!")
     threading.Thread(target=_t, daemon=True).start()
     m, s = divmod(seconds, 60)
     return f"Таймер на {m} мин." if m else f"Таймер на {s} сек."
@@ -1002,14 +1019,10 @@ def mode_morning():
     open_app("хром"); time.sleep(0.3); open_app("телеграм")
 
 def mode_presentation():
-    brightness_up(); brightness_up()
-    try:
-        subprocess.run(["powershell","-Command",
-            "Set-ItemProperty -Path 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion"
-            "\\Notifications\\Settings' -Name 'NOC_GLOBAL_SETTING_TOASTS_ENABLED' -Value 0 -Force"],
-            check=False, capture_output=True)
-    except Exception:
-        pass
+    open_app("телеграм")
+    open_app("powerpoint")
+    import webbrowser
+    webbrowser.open("https://gamma.app")
 
 def break_code():
     play("goodbye"); exit()
@@ -1127,6 +1140,7 @@ def daily_tip():
 
 
 def coin_flip():
+    _play_sfx("coin")
     result = random.choice(["Орёл!", "Решка!"])
     return result
 
