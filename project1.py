@@ -380,9 +380,7 @@ def speak(text):
                 except Exception:
                     pass
 
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    t.join()
+    _worker()
 
 
 def stop_speech():
@@ -579,22 +577,22 @@ class SlotExtractor:
 
 listen_fn = None
 
+_vol_obj = None
+
 def _vol():
+    return _vol_obj
+
+def _vol_init():
+    global _vol_obj
     try:
         from ctypes import POINTER, cast
         from comtypes import CLSCTX_ALL
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
         i = AudioUtilities.GetSpeakers().Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        return cast(i, POINTER(IAudioEndpointVolume))
+        _vol_obj = cast(i, POINTER(IAudioEndpointVolume))
+        print(f"  [pycaw] Громкость: {int(round(_vol_obj.GetMasterVolumeLevelScalar()*100))}%")
     except Exception:
-        return None
-
-def _vol_init():
-    v = _vol()
-    if v is None:
-        print("  [!] pycaw недоступен")
-    else:
-        print(f"  [pycaw] Громкость: {int(round(v.GetMasterVolumeLevelScalar()*100))}%")
+        print("  [!] pycaw недоступен — громкость через клавиши")
 
 def _wifi_status():
     try:
@@ -991,10 +989,10 @@ def calculate(expression=""):
     except Exception:
         return None
 
-def shutdown():        os.system("shutdown /s /t 10")
-def restart():         os.system("shutdown /r /t 10")
-def sleep_pc():        os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
-def cancel_shutdown(): os.system("shutdown /a")
+def shutdown():        os.system("shutdown /s /t 10");        return "Выключаю через 10 секунд."
+def restart():         os.system("shutdown /r /t 10");        return "Перезагружаю через 10 секунд."
+def sleep_pc():        os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0"); return "Спящий режим."
+def cancel_shutdown(): os.system("shutdown /a");              return "Выключение отменено."
 
 def mode_night():
     brightness_down(); brightness_down(); brightness_down()
@@ -1021,16 +1019,28 @@ def break_code():
 
 def _find_command(query):
     """Возвращает (cmd, score 0-100)."""
-    # Точное совпадение
+    # Точное совпадение — всегда
     if query in LOCAL_COMMANDS:
         return LOCAL_COMMANDS[query], 100
 
-    # Частичное: фраза из словаря содержится в запросе или наоборот
-    for phrase, cmd in LOCAL_COMMANDS.items():
-        if phrase in query or query in phrase:
-            return cmd, 85
+    # Для коротких запросов (1-2 слова) — только точное, без частичного
+    if len(query.split()) <= 2:
+        return None, 0
 
-    return None, 0
+    # Частичное: фраза из словаря содержится в запросе или наоборот (3+ слов)
+    best_cmd, best_score = None, 0
+    for phrase, cmd in LOCAL_COMMANDS.items():
+        if phrase in query:
+            # Чем длиннее совпавшая фраза — тем лучше
+            score = int(len(phrase) / len(query) * 100)
+            if score > best_score:
+                best_cmd, best_score = cmd, score
+        elif query in phrase:
+            score = int(len(query) / len(phrase) * 85)
+            if score > best_score:
+                best_cmd, best_score = cmd, score
+
+    return (best_cmd, best_score) if best_cmd else (None, 0)
 
 
 # ─── EXECUTE ─────────────────────────────────────────────────────────────────
@@ -1158,7 +1168,10 @@ def execute_command(cmd, query=""):
         "get_time":get_time, "get_date":get_date,
         "get_weather":get_weather, "translate":translate,
         "play_music":play_music,
-        "create_task":create_task, "show_tasks":show_tasks,
+        "create_task":create_task, "show_tasks":show_tasks, "clear_tasks":clear_tasks,
+        "music_next":music_next, "music_prev":music_prev,
+        "music_pause":music_pause, "music_resume":music_resume,
+        "stop_music":stop_music,
         "open_browser":open_browser, "open_folder":open_folder,
         "find_file":find_file, "dictate":dictate,
         "holiday":holiday, "fact_of_day":fact_of_day,
@@ -1177,15 +1190,14 @@ def execute_command(cmd, query=""):
         "switch_window":switch_window,
         "window_minimize":window_minimize, "window_maximize":window_maximize,
         "window_close":window_close,
-        "stop_music":stop_music,
-        "music_next":music_next, "music_prev":music_prev,
-        "music_pause":music_pause, "music_resume":music_resume,
+
         "wifi_toggle":wifi_toggle, "wifi_toggle_on":wifi_toggle_on,
         "wifi_toggle_off":wifi_toggle_off,
-        "stop_alarm":stop_alarm,
-        "break_reminder_on":break_reminder_on, "break_reminder_off":break_reminder_off,
         "shutdown":shutdown, "restart":restart,
         "sleep":sleep_pc, "cancel_shutdown":cancel_shutdown,
+        "stop_alarm":stop_alarm,
+        "break_reminder_on":break_reminder_on, "break_reminder_off":break_reminder_off,
+
         "lock_screen":lock_screen, "dark_mode":dark_mode,
         "open_settings":open_settings,
         "mode_night":mode_night, "mode_morning":mode_morning,
