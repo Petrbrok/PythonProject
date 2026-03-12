@@ -1240,6 +1240,11 @@ def _process(query):
     global is_muted
     query = query.lower().strip()
 
+    # wake word в окне активности — реагируем как на обычное обращение и выходим
+    if any(w in query for w in ("эй лора", "лора", "hey lora")):
+        play_random("wake")
+        return
+
     # "стоп" во время речи — только прерываем, не выходим
     if is_speaking:
         stop_speech()
