@@ -598,17 +598,41 @@ _vol_obj = None
 def _vol():
     return _vol_obj
 
+# ─── ФИКС pycaw: используем ctypes напрямую через Windows Core Audio API ─────
 def _vol_init():
     global _vol_obj
     try:
         from ctypes import POINTER, cast
         from comtypes import CLSCTX_ALL
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-        i = AudioUtilities.GetSpeakers().Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        _vol_obj = cast(i, POINTER(IAudioEndpointVolume))
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        _vol_obj = cast(interface, POINTER(IAudioEndpointVolume))
         print(f"  [pycaw] Громкость: {int(round(_vol_obj.GetMasterVolumeLevelScalar()*100))}%")
-    except Exception:
-        print("  [!] pycaw недоступен — громкость через клавиши")
+    except Exception as e1:
+        try:
+            # Fallback для новых версий pycaw где Activate возвращает другой тип
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+            from comtypes import CLSCTX_ALL
+            from ctypes import POINTER, cast
+            import comtypes
+            devices = AudioUtilities.GetSpeakers()
+            _vol_obj = devices.QueryInterface(IAudioEndpointVolume)
+            print(f"  [pycaw] Громкость: {int(round(_vol_obj.GetMasterVolumeLevelScalar()*100))}%")
+        except Exception as e2:
+            try:
+                # Fallback 2: через pycaw utils напрямую
+                from pycaw.utils import AudioUtilities
+                sessions = AudioUtilities.GetAllSessions()
+                from pycaw.pycaw import IAudioEndpointVolume
+                from comtypes import CLSCTX_ALL
+                from ctypes import POINTER, cast
+                speakers = AudioUtilities.GetSpeakers()
+                interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                _vol_obj = cast(interface, POINTER(IAudioEndpointVolume))
+                print(f"  [pycaw] Громкость: {int(round(_vol_obj.GetMasterVolumeLevelScalar()*100))}%")
+            except Exception as e3:
+                print(f"  [!] pycaw недоступен: {e1} | {e2} | {e3}")
 
 def _wifi_status():
     try:
@@ -1251,10 +1275,11 @@ def _process(query):
         if query == "стоп":
             return
 
+    # ── ФИКС: печатаем фразу ДО проверки стоп-триггеров ──
+    print(f"  \033[1myou   {query}\033[0m")
+
     if any(w in query for w in STOP_TRIGGERS):
         break_code()
-
-    print(f"  \033[3myou   {query}\033[0m")
 
     if any(w in query for w in UNMUTE_TRIGGERS):
         if is_muted:
@@ -1297,7 +1322,7 @@ def _process(query):
 
         speak(f"Ты имеешь в виду «{cmd_name}»?")
         confirm = _vosk_listener.listen(timeout=5) if _vosk_listener else None
-        print(f"  you   {confirm or '—'}")
+        print(f"  \033[1myou   {confirm or '—'}\033[0m")
 
         if confirm and any(w in confirm.lower() for w in
                            ("да", "верно", "точно", "именно", "ага", "угу", "конечно")):
@@ -1367,7 +1392,7 @@ def main():
     recorder.start()
 
     play("ready")
-    print("\n  Говори 'Эй Лора'  |  Escape / Пробел / Enter — прервать или выйти\n")
+    print("\n  Говори 'Эй Лора'  |  Escape — прервать речь или выйти\n")
 
     kbd_thread = threading.Thread(target=_keyboard_watcher, daemon=True)
     kbd_thread.start()
@@ -1377,7 +1402,7 @@ def main():
             pcm = recorder.read()
             if porcupine.process(pcm) >= 0:
                 recorder.stop()
-                print("  you   эй лора")
+                print("  \033[1myou   эй лора\033[0m")
                 if is_muted:
                     is_muted = False
                 play_random("wake")
@@ -1399,10 +1424,12 @@ def main():
                     if mute_text:
                         _process(mute_text)
 
-                while (time.time() - last_active) < WINDOW_AFTER_AI:
-                    followup = vosk_listener.listen(timeout=2)
+                deadline = time.time() + WINDOW_AFTER_AI
+                while time.time() < deadline and not _exit_event.is_set():
+                    followup = vosk_listener.listen(timeout=1)
                     if followup:
                         last_active = time.time()
+                        deadline = last_active + WINDOW_AFTER_AI
                         _process(followup)
 
     except KeyboardInterrupt:
