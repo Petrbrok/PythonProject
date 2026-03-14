@@ -598,41 +598,14 @@ _vol_obj = None
 def _vol():
     return _vol_obj
 
-# ─── ФИКС pycaw: используем ctypes напрямую через Windows Core Audio API ─────
 def _vol_init():
     global _vol_obj
     try:
-        from ctypes import POINTER, cast
-        from comtypes import CLSCTX_ALL
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        _vol_obj = cast(interface, POINTER(IAudioEndpointVolume))
+        from pycaw.pycaw import AudioUtilities
+        _vol_obj = AudioUtilities.GetSpeakers().EndpointVolume
         print(f"  [pycaw] Громкость: {int(round(_vol_obj.GetMasterVolumeLevelScalar()*100))}%")
-    except Exception as e1:
-        try:
-            # Fallback для новых версий pycaw где Activate возвращает другой тип
-            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-            from comtypes import CLSCTX_ALL
-            from ctypes import POINTER, cast
-            import comtypes
-            devices = AudioUtilities.GetSpeakers()
-            _vol_obj = devices.QueryInterface(IAudioEndpointVolume)
-            print(f"  [pycaw] Громкость: {int(round(_vol_obj.GetMasterVolumeLevelScalar()*100))}%")
-        except Exception as e2:
-            try:
-                # Fallback 2: через pycaw utils напрямую
-                from pycaw.utils import AudioUtilities
-                sessions = AudioUtilities.GetAllSessions()
-                from pycaw.pycaw import IAudioEndpointVolume
-                from comtypes import CLSCTX_ALL
-                from ctypes import POINTER, cast
-                speakers = AudioUtilities.GetSpeakers()
-                interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                _vol_obj = cast(interface, POINTER(IAudioEndpointVolume))
-                print(f"  [pycaw] Громкость: {int(round(_vol_obj.GetMasterVolumeLevelScalar()*100))}%")
-            except Exception as e3:
-                print(f"  [!] pycaw недоступен: {e1} | {e2} | {e3}")
+    except Exception as e:
+        print(f"  [!] pycaw недоступен: {e}")
 
 def _wifi_status():
     try:
