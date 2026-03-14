@@ -154,7 +154,7 @@ LOCAL_COMMANDS = {
     "таймер":"set_timer", "поставь таймер":"set_timer",
     "поставь будильник":"set_alarm", "отключи будильник":"stop_alarm",
     "выключи компьютер":"shutdown", "перезагрузи":"restart",
-    "перезагрузка":"restart", "спящий режим":"sleep",
+    "перезагрузка":"restart", "перезапусти код":"restart_script", "перезапуск кода":"restart_script", "спящий режим":"sleep",
     "отмени выключение":"cancel_shutdown",
     "включи перерывы":"break_reminder_on", "выключи перерывы":"break_reminder_off",
     "погода":"get_weather", "какая погода":"get_weather",
@@ -228,6 +228,7 @@ CMD_NAMES = {
     "open_settings":"настройки", "lock_screen":"блокировать экран",
     "dark_mode":"тёмная тема",
     "mode_night":"ночной режим", "mode_morning":"утренний режим",
+    "restart_script":"перезапуск кода",
     "mode_presentation":"режим презентации",
     "holiday":"праздник сегодня", "fact_of_day":"интересный факт",
     "tell_joke":"анекдот", "daily_tip":"совет дня", "coin_flip":"монетка",
@@ -289,6 +290,12 @@ STATIC_RESPONSES = {
     "confirm_yes":"Выполняю.",
     "confirm_no":"Отменила.",
     "wake_0":"Слушаю.", "wake_1":"Да.", "wake_2":"Здесь.",
+    "coin_heads":"Орёл!", "coin_tails":"Решка!",
+    "timer_done":"Таймер сработал!",
+    "screenshot_done":"Скриншот сохранён.",
+    "morning_done":"Утренний режим включён.",
+    "pres_done":"Режим презентации включён. Телеграм, PowerPoint и Гамма открыты.",
+    "night_done":"Ночной режим. Яркость снижена.",
 }
 
 _cache: dict = {}
@@ -625,39 +632,51 @@ def get_date():
     wd = ["понедельник","вторник","среда","четверг","пятница","суббота","воскресенье"][n.weekday()]
     return f"Сегодня {n.day} {mo[n.month-1]} {n.year}, {wd}."
 
+def _send_vol_key(key_code):
+    """Эмулирует медиаклавишу — Windows показывает плашку громкости."""
+    os.system(f"powershell.exe -WindowStyle Hidden (new-object -com wscript.shell).SendKeys([char]{key_code})")
+
 def volume_up():
+    # 175 = VK_VOLUME_UP — плашка Windows
     v = _vol()
     if v:
-        new = min(1.0, v.GetMasterVolumeLevelScalar() + 0.15)
+        cur = v.GetMasterVolumeLevelScalar()
+        step = 0.05 if cur >= 0.5 else 0.10
+        new = min(1.0, cur + step)
         v.SetMasterVolumeLevelScalar(new, None)
-        return f"Громкость {int(round(new*100))}%."
+    _send_vol_key(175)
     return "vol_up"
 
 def volume_down():
+    # 174 = VK_VOLUME_DOWN — плашка Windows
     v = _vol()
     if v:
-        new = max(0.0, v.GetMasterVolumeLevelScalar() - 0.15)
+        cur = v.GetMasterVolumeLevelScalar()
+        step = 0.05 if cur > 0.5 else 0.10
+        new = max(0.0, cur - step)
         v.SetMasterVolumeLevelScalar(new, None)
-        return f"Громкость {int(round(new*100))}%."
+    _send_vol_key(174)
     return "vol_down"
 
 def volume_max():
     v = _vol()
     if v: v.SetMasterVolumeLevelScalar(1.0, None)
+    _send_vol_key(175)
 
 def volume_min():
     v = _vol()
     if v: v.SetMasterVolumeLevelScalar(0.0, None)
+    _send_vol_key(174)
 
 def sound_off():
     v = _vol()
     if v: v.SetMute(1, None)
-    else: os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]173)")
+    _send_vol_key(173)  # 173 = VK_VOLUME_MUTE
 
 def sound_on():
     v = _vol()
     if v: v.SetMute(0, None)
-    else: os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]173)")
+    _send_vol_key(173)
 
 def brightness_up():
     try:
@@ -698,6 +717,7 @@ def screenshot():
         import pyautogui
         _play_sfx("camera")
         pyautogui.screenshot(f"screenshot_{int(time.time())}.png")
+        play("screenshot_done")
     except Exception:
         pass
 
@@ -929,7 +949,7 @@ def stop_music():
             pass
 
 def set_timer(seconds):
-    def _t(): time.sleep(seconds); _play_sfx("timer"); speak("Таймер сработал!")
+    def _t(): time.sleep(seconds); _play_sfx("timer"); play("timer_done")
     threading.Thread(target=_t, daemon=True).start()
     m, s = divmod(seconds, 60)
     return f"Таймер на {m} мин." if m else f"Таймер на {s} сек."
@@ -1003,23 +1023,50 @@ def calculate(expression=""):
     except Exception:
         return None
 
-def shutdown():        os.system("shutdown /s /t 10");        return "Выключаю через 10 секунд."
-def restart():         os.system("shutdown /r /t 10");        return "Перезагружаю через 10 секунд."
-def sleep_pc():        os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0"); return "Спящий режим."
-def cancel_shutdown(): os.system("shutdown /a");              return "Выключение отменено."
+def _arm_cancel(seconds=15):
+    """Активирует _cancel_event на N секунд — Escape отменяет команду."""
+    _cancel_event.set()
+    def _clear(): time.sleep(seconds); _cancel_event.clear()
+    threading.Thread(target=_clear, daemon=True).start()
+
+def shutdown():
+    os.system("shutdown /s /t 15")
+    _arm_cancel(15)
+    return "Выключаю через 15 секунд. Escape — отменить."
+
+def restart():
+    os.system("shutdown /r /t 15")
+    _arm_cancel(15)
+    return "Перезагружаю через 15 секунд. Escape — отменить."
+
+def sleep_pc():
+    _arm_cancel(15)
+    def _do(): time.sleep(15); os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+    threading.Thread(target=_do, daemon=True).start()
+    return "Спящий режим через 15 секунд. Escape — отменить."
+
+def restart_script():
+    import sys
+    speak("Перезапускаю.")
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+def cancel_shutdown(): os.system("shutdown /a"); return "Выключение отменено."
 
 def mode_night():
     brightness_down(); brightness_down(); brightness_down()
+    play("night_done")
 
 def mode_morning():
     brightness_up(); brightness_up()
     open_app("хром"); time.sleep(0.3); open_app("телеграм")
+    play("morning_done")
 
 def mode_presentation():
     open_app("телеграм")
     open_app("powerpoint")
     import webbrowser
     webbrowser.open("https://gamma.app")
+    play("pres_done")
 
 def break_code():
     play("goodbye"); exit()
@@ -1138,8 +1185,8 @@ def daily_tip():
 
 def coin_flip():
     _play_sfx("coin")
-    result = random.choice(["Орёл!", "Решка!"])
-    return result
+    key = random.choice(["coin_heads", "coin_tails"])
+    return key
 
 
 def execute_command(cmd, query=""):
@@ -1213,6 +1260,7 @@ def execute_command(cmd, query=""):
         "open_settings":open_settings,
         "mode_night":mode_night, "mode_morning":mode_morning,
         "mode_presentation":mode_presentation,
+        "restart_script":restart_script,
         "break_code":break_code,
     }
     fn = void_cmds.get(cmd)
@@ -1320,12 +1368,19 @@ def _process(query):
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 _exit_event = threading.Event()
+_cancel_event = threading.Event()  # Escape отменяет выключение/сон/перезагрузку
 
 def _keyboard_watcher():
-    """Отдельный поток: Escape прерывает речь или завершает программу."""
+    """Отдельный поток: Escape прерывает речь, отменяет выключение или завершает программу."""
     def on_key(e):
         if e.name == "esc":
-            if is_speaking:
+            if _cancel_event.is_set():
+                # Идёт обратный отсчёт выключения/сна/перезагрузки — отменяем
+                _cancel_event.clear()
+                os.system("shutdown /a")
+                print("  [kbd] выключение отменено")
+                speak("Отменила.")
+            elif is_speaking:
                 stop_speech()
                 print("  [kbd] речь прервана")
             else:
