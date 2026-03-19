@@ -33,6 +33,12 @@ EDGE_VOICE      = os.getenv("EDGE_VOICE", "ru-RU-SvetlanaNeural")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")
 MODEL_PATH      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
 
+# Настройки из .env (можно менять без редактирования кода)
+VOL_STEP_LOW    = float(os.getenv("VOL_STEP_LOW",  "0.10"))  # шаг до 50%
+VOL_STEP_HIGH   = float(os.getenv("VOL_STEP_HIGH", "0.05"))  # шаг после 50%
+WAKE_SENSITIVITY= float(os.getenv("WAKE_SENSITIVITY", "0.5")) # чувствительность wake word
+WINDOW_AFTER_AI = int(os.getenv("WINDOW_AFTER_AI", "12"))     # окно активности (сек)
+
 try:
     from groq import Groq
     _groq_client = Groq(api_key=os.getenv("GROQ_API_KEY")) if os.getenv("GROQ_API_KEY") else None
@@ -48,7 +54,6 @@ is_speaking           = False
 stop_speaking_event   = threading.Event()
 alarm_thread          = None
 break_reminder_active = False
-WINDOW_AFTER_AI       = 12
 _vosk_listener        = None
 
 WAKE_PHRASES    = ["Слушаю.", "Да.", "Здесь."]
@@ -179,6 +184,7 @@ LOCAL_COMMANDS = {
     "закрой ворд":"close_app:word",          "закрой эксель":"close_app:excel",
     "закрой стим":"close_app:steam",
     "размут":"unmute", "включись":"unmute", "слушай":"unmute",
+    "эй лора":"ping", "хей лора":"ping", "hey lora":"ping",
     "какой сегодня праздник":"holiday", "что сегодня празднуют":"holiday",
     "день чего сегодня":"holiday", "какой праздник":"holiday",
     "праздник сегодня":"holiday",
@@ -637,22 +643,20 @@ def _send_vol_key(key_code):
     os.system(f"powershell.exe -WindowStyle Hidden (new-object -com wscript.shell).SendKeys([char]{key_code})")
 
 def volume_up():
-    # 175 = VK_VOLUME_UP — плашка Windows
     v = _vol()
     if v:
         cur = v.GetMasterVolumeLevelScalar()
-        step = 0.05 if cur >= 0.5 else 0.10
+        step = VOL_STEP_HIGH if cur >= 0.5 else VOL_STEP_LOW
         new = min(1.0, cur + step)
         v.SetMasterVolumeLevelScalar(new, None)
     _send_vol_key(175)
     return "vol_up"
 
 def volume_down():
-    # 174 = VK_VOLUME_DOWN — плашка Windows
     v = _vol()
     if v:
         cur = v.GetMasterVolumeLevelScalar()
-        step = 0.05 if cur > 0.5 else 0.10
+        step = VOL_STEP_HIGH if cur > 0.5 else VOL_STEP_LOW
         new = max(0.0, cur - step)
         v.SetMasterVolumeLevelScalar(new, None)
     _send_vol_key(174)
@@ -1069,7 +1073,8 @@ def mode_presentation():
     play("pres_done")
 
 def break_code():
-    play("goodbye"); exit()
+    play("goodbye")
+    _exit_event.set()
 
 
 # ─── НЕЧЁТКИЙ ПОИСК ──────────────────────────────────────────────────────────
@@ -1414,7 +1419,7 @@ def main():
     porcupine = pvporcupine.create(
         access_key=PICOVOICE_KEY,
         keyword_paths=[PPN_PATH],
-        sensitivities=[0.5]
+        sensitivities=[WAKE_SENSITIVITY]
     )
     recorder = PvRecorder(device_index=-1, frame_length=porcupine.frame_length)
     recorder.start()
