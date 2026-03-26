@@ -83,6 +83,8 @@ APP_PATHS = {
     "powerpoint":  r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
     "поверпоинт":  r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
     "steam":       r"C:\Program Files (x86)\Steam\steam.exe",
+    "happ":         r"C:\Program Files\FlyFrogLLC\Happ\Happ.exe",
+    "хапп":         r"C:\Program Files\FlyFrogLLC\Happ\Happ.exe",
 }
 APP_NAMES_RU = {
     "телеграм":"Телеграм", "telegram":"Телеграм",
@@ -95,6 +97,7 @@ APP_NAMES_RU = {
     "ворд":"Word",         "word":"Word",
     "эксель":"Excel",      "excel":"Excel",
     "поверпоинт":"PowerPoint", "powerpoint":"PowerPoint",
+    "хапп":"Happ",         "happ":"Happ",
 }
 
 LOCAL_COMMANDS = {
@@ -143,6 +146,8 @@ LOCAL_COMMANDS = {
     "открой блокнот":"open_app:блокнот",   "открой калькулятор":"open_app:калькулятор",
     "открой проводник":"open_app:проводник","открой стим":"open_app:steam",
     "открой ворд":"open_app:word",         "открой эксель":"open_app:excel",
+    "открой хапп":"open_app:хапп",         "запусти хапп":"open_app:хапп",
+    "закрой хапп":"close_app:хапп",
     "включи музыку":"play_music", "играй музыку":"play_music",
     "выключи музыку":"stop_music", "стоп музыка":"stop_music",
     "следующий трек":"music_next", "предыдущий трек":"music_prev",
@@ -851,6 +856,7 @@ def close_app(name):
         "ворд":"winword",      "word":"winword",
         "эксель":"excel",      "excel":"excel",
         "стим":"steam",        "steam":"steam",
+        "хапп":"Happ",         "happ":"Happ",
     }
     ru_name = APP_NAMES_RU.get(name.lower(), name.capitalize())
     proc = process_map.get(name.lower(), name)
