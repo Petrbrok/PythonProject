@@ -1471,6 +1471,7 @@ def main():
                         deadline = last_active + WINDOW_AFTER_AI
                         _process(followup)
 
+
     except KeyboardInterrupt:
         print("\n  Завершение...")
         _exit_event.set()
