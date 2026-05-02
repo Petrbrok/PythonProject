@@ -10,7 +10,6 @@ import webbrowser
 import re
 import queue
 import yaml
-import keyboard
 from datetime import datetime
 from dotenv import load_dotenv
 import edge_tts
@@ -18,233 +17,286 @@ import pygame
 import sounddevice as sd
 import vosk
 
-try:
-    import pvporcupine
-    from pvrecorder import PvRecorder
-    PORCUPINE_AVAILABLE = True
-except ImportError:
-    PORCUPINE_AVAILABLE = False
+from wake_word_detector import WakeWordDetector
 
 load_dotenv()
 
-PICOVOICE_KEY   = os.getenv("PICOVOICE_KEY", "")
-PPN_PATH        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hey_lora.ppn")
 EDGE_VOICE      = os.getenv("EDGE_VOICE", "ru-RU-SvetlanaNeural")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")
 MODEL_PATH      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
 
-# Настройки из .env (можно менять без редактирования кода)
-VOL_STEP_LOW    = float(os.getenv("VOL_STEP_LOW",  "0.10"))  # шаг до 50%
-VOL_STEP_HIGH   = float(os.getenv("VOL_STEP_HIGH", "0.05"))  # шаг после 50%
-WAKE_SENSITIVITY= float(os.getenv("WAKE_SENSITIVITY", "0.5")) # чувствительность wake word
-WINDOW_AFTER_AI = int(os.getenv("WINDOW_AFTER_AI", "12"))     # окно активности (сек)
-
+# ── ИИ — включается автоматически если есть GROQ_API_KEY в .env ─────────────
 try:
     from groq import Groq
     _groq_client = Groq(api_key=os.getenv("GROQ_API_KEY")) if os.getenv("GROQ_API_KEY") else None
-    AI_ENABLED   = _groq_client is not None
+    AI_ENABLED = _groq_client is not None
 except ImportError:
     _groq_client = None
-    AI_ENABLED   = False
+    AI_ENABLED = False
 
 pygame.mixer.init()
 
-is_muted              = False
-is_speaking           = False
-stop_speaking_event   = threading.Event()
-alarm_thread          = None
+is_muted            = False
+is_speaking         = False
+stop_speaking_event = threading.Event()
+alarm_thread        = None
 break_reminder_active = False
-_vosk_listener        = None
+WINDOW_AFTER_AI     = 12
+_first_activation   = True   # первое "эй лора" за сессию
+_vosk_listener      = None   # ссылка для свободной речи
 
-WAKE_PHRASES    = ["Слушаю.", "Да.", "Здесь."]
-UNMUTE_TRIGGERS = ("размут", "включись", "продолжай", "проснись", "вернись", "активируйся", "слушай")
-MUTE_TRIGGERS   = ("замолчи", "молчи", "тихо", "пауза", "не слушай", "заткнись",
-                   "хватит", "подожди", "погоди", "тишина", "умолкни", "мут", "помолчи")
-STOP_TRIGGERS   = ("завершить работу", "заверши работу", "выключись", "завершись",
-                   "закройся", "выход", "пока", "до свидания", "отключись", "выключи себя",
-                   "стоп")
+WAKE_PHRASES  = ["Слушаю.", "Да.", "Здесь."]
+MUTE_TRIGGERS = (
+    "замолчи", "молчи", "тихо", "пауза", "не слушай",
+    "заткнись", "хватит", "подожди", "погоди", "тишина",
+    "умолкни", "мут", "стоп", "stop", "помолчи",
+)
+UNMUTE_TRIGGERS = (
+    "размут", "включись", "продолжай", "проснись", "вернись",
+    "активируйся", "слушай",
+)
+STOP_TRIGGERS = (
+    "завершить работу", "заверши работу", "выключись", "завершись",
+    "закройся", "выход", "пока", "до свидания", "отключись", "выключи себя",
+)
 
-CONFIDENCE_EXECUTE = 85
-CONFIDENCE_ASK     = 60
+CACHED_PHRASES = {
+    "ready":     "Готова к работе",
+    "unclear_0": "Не поняла",
+    "unclear_1": "Повтори пожалуйста",
+    "unclear_2": "Не расслышала",
+}
+_phrase_cache: dict[str, str] = {}
+_resp_cache:  dict[str, str] = {}  # кеш всех ответов
+
+ALL_RESPONSES = {
+    # Громкость
+    "volume_up_10":   "Громкость 10%.",
+    "volume_up_15":   "Громкость 15%.",
+    "volume_up_20":   "Громкость 20%.",
+    "volume_up_25":   "Громкость 25%.",
+    "volume_up_30":   "Громкость 30%.",
+    "volume_up_35":   "Громкость 35%.",
+    "volume_up_40":   "Громкость 40%.",
+    "volume_up_45":   "Громкость 45%.",
+    "volume_up_50":   "Громкость 50%.",
+    "volume_up_55":   "Громкость 55%.",
+    "volume_up_60":   "Громкость 60%.",
+    "volume_up_65":   "Громкость 65%.",
+    "volume_up_70":   "Громкость 70%.",
+    "volume_up_75":   "Громкость 75%.",
+    "volume_up_80":   "Громкость 80%.",
+    "volume_up_85":   "Громкость 85%.",
+    "volume_up_90":   "Громкость 90%.",
+    "volume_up_95":   "Громкость 95%.",
+    "volume_up_100":  "Громкость 100%.",
+    "volume_max":     "Громкость максимальная.",
+    "volume_min":     "Громкость минимальная.",
+    "sound_off":      "Звук выключен.",
+    "sound_on":       "Звук включён.",
+    "volume_up_fallback":   "Громкость увеличена.",
+    "volume_down_fallback": "Громкость уменьшена.",
+    # Яркость
+    "brightness_up":    "Яркость увеличена.",
+    "brightness_down":  "Яркость уменьшена.",
+    "brightness_20":    "Яркость 20%.",
+    "brightness_40":    "Яркость 40%.",
+    "brightness_60":    "Яркость 60%.",
+    "brightness_80":    "Яркость 80%.",
+    "brightness_100":   "Яркость 100%.",
+    # WiFi
+    "wifi_on":   "WiFi включён.",
+    "wifi_off":  "WiFi выключен.",
+    # Окна
+    "window_minimize":  "Окна свёрнуты.",
+    "window_maximize":  "Окно развёрнуто.",
+    "window_close":     "Окно закрыто.",
+    "switch_window":    "Переключаю.",
+    # Буфер
+    "clipboard_copy":   "Скопировано.",
+    "clipboard_paste":  "Вставлено.",
+    "clipboard_empty":  "Буфер пуст.",
+    # Скриншот
+    "screenshot":       "Скриншот сохранён.",
+    # Музыка
+    "stop_music":       "Музыка остановлена.",
+    # Задачи
+    "tasks_empty":      "Список пуст.",
+    "tasks_cleared":    "Список очищен.",
+    # Питание
+    "shutdown":         "Выключаю через 10 секунд.",
+    "restart":          "Перезагружаю через 10 секунд.",
+    "sleep":            "Спящий режим.",
+    "cancel_shutdown":  "Выключение отменено.",
+    # Будильник
+    "alarm_off":        "Будильник отключён.",
+    # Перерывы
+    "break_on":         "Напоминания о перерывах включены.",
+    "break_off":        "Напоминания выключены.",
+    "break_already":    "Напоминания уже включены.",
+    # Браузер
+    "browser_closed":   "Браузер закрыт.",
+    # Приложения
+    "app_telegram":     "Телеграм открыт.",
+    "app_discord":      "Дискорд открыт.",
+    "app_spotify":      "Спотифай открыт.",
+    "app_chrome":       "Хром открыт.",
+    "app_notepad":      "Блокнот открыт.",
+    "app_calculator":   "Калькулятор открыт.",
+    "app_explorer":     "Проводник открыт.",
+    "app_steam":        "Стим открыт.",
+    "app_obs":          "OBS открыт.",
+    "app_vscode":       "VS Code открыт.",
+    "app_word":         "Word открыт.",
+    "app_excel":        "Excel открыт.",
+    # Пинг
+    "ping_0":  "Да?",
+    "ping_1":  "Я здесь.",
+    "ping_2":  "Слушаю.",
+    # Размут
+    "unmute_0": "Снова слушаю.",
+    "unmute_1": "Да?",
+    "unmute_2": "Я здесь.",
+    # Режимы
+    "mode_night":        "Ночной режим. Яркость снижена, уведомления отключены.",
+    "mode_presentation": "Режим презентации. PowerPoint, Телеграм, загрузки и Gamma открыты.",
+    # Папки
+    "folder_downloads":  "Загрузки открыта.",
+    "folder_documents":  "Документы открыта.",
+    "folder_desktop":    "Рабочий стол открыт.",
+    "folder_music":      "Музыка открыта.",
+    "folder_video":      "Видео открыто.",
+    "folder_images":     "Изображения открыты.",
+    # Прочее
+    "dictated":          "Напечатала.",
+    "battery_missing":   "Батарея не найдена.",
+    "weather_no_key":    "Добавь WEATHER_API_KEY в .env.",
+    "weather_error":     "Не удалось получить погоду.",
+    "farewell":          "До встречи!",
+}
+
 
 APP_PATHS = {
-    "telegram":    os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Telegram Desktop\Telegram.exe"),
-    "телеграм":    os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Telegram Desktop\Telegram.exe"),
+    "telegram":    os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Telegram\Telegram.exe"),
+    "телеграм":    os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Telegram\Telegram.exe"),
     "discord":     os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Local\Discord\Update.exe"),
     "дискорд":     os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Local\Discord\Update.exe"),
+    "spotify":     os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Spotify\Spotify.exe"),
+    "спотифай":    os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Roaming\Spotify\Spotify.exe"),
     "chrome":      r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     "хром":        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    "notepad":     "notepad.exe",    "блокнот":     "notepad.exe",
-    "calculator":  "calc.exe",       "калькулятор": "calc.exe",
+    "notepad":     "notepad.exe",   "блокнот":    "notepad.exe",
+    "calculator":  "calc.exe",      "калькулятор":"calc.exe",
     "paint":       "mspaint.exe",
-    "проводник":   "explorer.exe",   "explorer":    "explorer.exe",
+    "проводник":   "explorer.exe",  "explorer":   "explorer.exe",
     "word":        r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
     "excel":       r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
-    "powerpoint":  r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
-    "поверпоинт":  r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
+    "obs":         r"C:\Program Files\obs-studio\bin\64bit\obs64.exe",
     "steam":       r"C:\Program Files (x86)\Steam\steam.exe",
-    "happ":         r"C:\Program Files\FlyFrogLLC\Happ\Happ.exe",
-    "хапп":         r"C:\Program Files\FlyFrogLLC\Happ\Happ.exe",
+    "vscode":      os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Local\Programs\Microsoft VS Code\Code.exe"),
+    "код":         os.path.expandvars(r"C:\Users\%USERNAME%\AppData\Local\Programs\Microsoft VS Code\Code.exe"),
 }
 APP_NAMES_RU = {
-    "телеграм":"Телеграм", "telegram":"Телеграм",
-    "дискорд":"Дискорд",   "discord":"Дискорд",
-    "хром":"Хром",         "chrome":"Хром",
-    "блокнот":"Блокнот",   "notepad":"Блокнот",
-    "калькулятор":"Калькулятор", "calculator":"Калькулятор",
-    "проводник":"Проводник", "explorer":"Проводник",
-    "стим":"Стим",         "steam":"Стим",
-    "ворд":"Word",         "word":"Word",
-    "эксель":"Excel",      "excel":"Excel",
-    "поверпоинт":"PowerPoint", "powerpoint":"PowerPoint",
-    "хапп":"Happ",         "happ":"Happ",
+    "телеграм":"Телеграм","telegram":"Телеграм",
+    "дискорд":"Дискорд",  "discord":"Дискорд",
+    "спотифай":"Спотифай","spotify":"Спотифай",
+    "хром":"Хром",        "chrome":"Хром",
+    "блокнот":"Блокнот",  "notepad":"Блокнот",
+    "калькулятор":"Калькулятор","calculator":"Калькулятор",
+    "проводник":"Проводник","explorer":"Проводник",
+    "стим":"Стим",        "steam":"Стим",
+    "obs":"OBS",
+    "код":"VS Code",      "vscode":"VS Code",
+    "ворд":"Word",        "word":"Word",
+    "эксель":"Excel",     "excel":"Excel",
 }
 
+# ─── КОМАНДЫ ────────────────────────────────────────────────────────────────
 LOCAL_COMMANDS = {
-    "который час":"get_time", "сколько времени":"get_time",
-    "какое время":"get_time", "время":"get_time",
-    "какое сегодня число":"get_date", "какая дата":"get_date",
-    "день недели":"get_date", "дата":"get_date",
-    "увеличь громкость":"volume_up", "громче":"volume_up",
-    "сделай громче":"volume_up", "прибавь громкость":"volume_up",
-    "уменьши громкость":"volume_down", "тише":"volume_down",
-    "сделай тише":"volume_down", "убавь громкость":"volume_down",
-    "выключи звук":"sound_off", "без звука":"sound_off",
-    "включи звук":"sound_on", "верни звук":"sound_on",
+    # Время
+    "который час":"get_time","сколько времени":"get_time",
+    "какое время":"get_time","время":"get_time",
+    "какое сегодня число":"get_date","какая дата":"get_date",
+    "день недели":"get_date","дата":"get_date",
+    # Громкость
+    "увеличь громкость":"volume_up","громче":"volume_up",
+    "сделай громче":"volume_up","прибавь громкость":"volume_up",
+    "уменьши громкость":"volume_down","тише":"volume_down",
+    "сделай тише":"volume_down","убавь громкость":"volume_down",
+    "выключи звук":"sound_off","без звука":"sound_off",
+    "включи звук":"sound_on","верни звук":"sound_on",
     "максимальная громкость":"volume_max",
+    "поставь максимальную громкость":"volume_max",
     "минимальная громкость":"volume_min",
-    "увеличь яркость":"brightness_up", "ярче":"brightness_up",
-    "уменьши яркость":"brightness_down", "темнее":"brightness_down",
-    "сверни окно":"window_minimize", "сверни все":"window_minimize",
-    "сверни всё":"window_minimize", "убери все окна":"window_minimize",
-    "разверни окно":"window_maximize", "закрой окно":"window_close",
-    "переключи окно":"switch_window", "альт таб":"switch_window",
-    "скопируй":"clipboard_copy", "вставь":"clipboard_paste",
-    "что в буфере":"clipboard_read",
-    "скриншот":"screenshot", "сделай скриншот":"screenshot",
-    "скопируй текст с экрана":"ocr_copy",
-    "скопируй с экрана":"ocr_copy",
-    "скопируй экран":"ocr_copy",
-    "прочитай экран":"ocr_copy",
-    "текст с экрана":"ocr_copy",
-    "переведи экран":"ocr_translate",
-    "переведи с экрана":"ocr_translate",
-    "переведи текст с экрана":"ocr_translate",
-    "перевод с экрана":"ocr_translate",
-    "заряд батареи":"get_battery", "батарея":"get_battery",
-    "загрузка процессора":"get_cpu", "нагрузка системы":"get_cpu",
-    "сколько места на диске":"disk_space",
-    "какой ip":"get_ip",
-    "скорость интернета":"speedtest",
-    "покажи процессы":"top_processes",
-    "включи вайфай":"wifi_toggle_on", "выключи вайфай":"wifi_toggle_off",
+    # Яркость
+    "увеличь яркость":"brightness_up","ярче":"brightness_up","сделай ярче":"brightness_up",
+    "уменьши яркость":"brightness_down","темнее":"brightness_down","сделай темнее":"brightness_down",
+    # Окна
+    "сверни окно":"window_minimize","сверни все":"window_minimize",
+    "сверни всё":"window_minimize","убери все окна":"window_minimize",
+    "разверни окно":"window_maximize","закрой окно":"window_close",
+    "переключи окно":"switch_window","альт таб":"switch_window","переключить окно":"switch_window",
+    # Буфер
+    "скопируй":"clipboard_copy","вставь":"clipboard_paste","что в буфере":"clipboard_read",
+    # Скриншот
+    "скриншот":"screenshot","сделай скриншот":"screenshot","снимок экрана":"screenshot",
+    # Система
+    "заряд батареи":"get_battery","сколько заряда":"get_battery","батарея":"get_battery",
+    "загрузка процессора":"get_cpu","нагрузка системы":"get_cpu",
+    # WiFi
+    "включи вайфай":"wifi_toggle_on","включи вай фай":"wifi_toggle_on",
+    "выключи вайфай":"wifi_toggle_off","выключи вай фай":"wifi_toggle_off",
     "вайфай":"wifi_toggle",
-    "открой браузер":"open_browser", "закрой браузер":"close_browser",
-    "открой телеграм":"open_app:телеграм", "запусти телеграм":"open_app:телеграм",
-    "открой дискорд":"open_app:дискорд",   "запусти дискорд":"open_app:дискорд",
-    "открой хром":"open_app:хром",         "запусти хром":"open_app:хром",
-    "открой блокнот":"open_app:блокнот",   "открой калькулятор":"open_app:калькулятор",
+    # Браузер
+    "открой браузер":"open_browser","закрой браузер":"close_browser",
+    # Приложения
+    "открой телеграм":"open_app:телеграм","запусти телеграм":"open_app:телеграм",
+    "открой дискорд":"open_app:дискорд","запусти дискорд":"open_app:дискорд",
+    "открой спотифай":"open_app:спотифай","запусти спотифай":"open_app:спотифай",
+    "открой хром":"open_app:хром","запусти хром":"open_app:хром",
+    "открой блокнот":"open_app:блокнот","открой калькулятор":"open_app:калькулятор",
     "открой проводник":"open_app:проводник","открой стим":"open_app:steam",
-    "открой ворд":"open_app:word",         "открой эксель":"open_app:excel",
-    "открой хапп":"open_app:хапп",         "запусти хапп":"open_app:хапп",
-    "закрой хапп":"close_app:хапп",
-    "включи музыку":"play_music", "играй музыку":"play_music",
-    "выключи музыку":"stop_music", "стоп музыка":"stop_music",
-    "следующий трек":"music_next", "предыдущий трек":"music_prev",
-    "поставь на паузу":"music_pause", "продолжи музыку":"music_resume",
-    "добавь задачу":"create_task", "новая задача":"create_task",
-    "список задач":"show_tasks",   "мои задачи":"show_tasks",
-    "очисти задачи":"clear_tasks",
+    "открой obs":"open_app:obs","открой код":"open_app:код",
+    "открой ворд":"open_app:word","открой эксель":"open_app:excel",
+    # Музыка
+    "включи музыку":"play_music","играй музыку":"play_music",
+    "выключи музыку":"stop_music","стоп музыка":"stop_music",
+    # Задачи
+    "добавь задачу":"create_task","новая задача":"create_task",
+    "список задач":"show_tasks","мои задачи":"show_tasks","очисти задачи":"clear_tasks",
+    # Папки
     "открой загрузки":"open_folder:загрузки",
     "открой документы":"open_folder:документы",
     "открой рабочий стол":"open_folder:рабочий стол",
     "открой музыку":"open_folder:музыка",
     "открой видео":"open_folder:видео",
     "открой изображения":"open_folder:изображения",
-    "таймер":"set_timer", "поставь таймер":"set_timer",
-    "поставь будильник":"set_alarm", "отключи будильник":"stop_alarm",
-    "выключи компьютер":"shutdown", "перезагрузи":"restart",
-    "перезагрузка":"restart", "перезапусти код":"restart_script", "перезапуск кода":"restart_script", "спящий режим":"sleep",
-    "отмени выключение":"cancel_shutdown",
-    "включи перерывы":"break_reminder_on", "выключи перерывы":"break_reminder_off",
-    "погода":"get_weather", "какая погода":"get_weather",
-    "переведи":"translate",
-    "диктуй":"dictate", "диктовка":"dictate",
-    "найди файл":"find_file", "поиск файла":"find_file",
-    "напомни":"remind_me",
-    "посчитай":"calculate",
-    "очисти буфер обмена":"clipboard_clear",
-    "открой настройки":"open_settings",
-    "блокировка экрана":"lock_screen",
-    "сделай тёмную тему":"dark_mode",
+    # Таймер и будильник
+    "таймер":"set_timer",
+    "поставь таймер":"set_timer",
+    "поставь будильник":"set_alarm",
+    "будильник":"stop_alarm",
+    "отключи будильник":"stop_alarm",
+    # Питание
+    "выключи компьютер":"shutdown","перезагрузи":"restart",
+    "перезагрузка":"restart","спящий режим":"sleep","отмени выключение":"cancel_shutdown",
+    # Перерывы
+    "включи перерывы":"break_reminder_on","выключи перерывы":"break_reminder_off",
+    # Режимы
     "ночной режим":"mode_night",
+    "включи ночной режим":"mode_night",
     "режим презентации":"mode_presentation",
+    "презентация":"mode_presentation",
+    "режим презентация":"mode_presentation",
     "утренний режим":"mode_morning",
     "доброе утро":"mode_morning",
-    "замолчи":"mute", "мут":"mute", "молчи":"mute",
-    "закрой телеграм":"close_app:телеграм", "выйди из телеграма":"close_app:телеграм",
-    "закрой дискорд":"close_app:дискорд",   "выйди из дискорда":"close_app:дискорд",
-    "закрой хром":"close_app:хром",          "закрой браузер хром":"close_app:хром",
-    "закрой блокнот":"close_app:блокнот",
-    "закрой ворд":"close_app:word",          "закрой эксель":"close_app:excel",
-    "закрой стим":"close_app:steam",
-    "размут":"unmute", "включись":"unmute", "слушай":"unmute",
-    "эй лора":"ping", "хей лора":"ping", "hey lora":"ping",
-    "какой сегодня праздник":"holiday", "что сегодня празднуют":"holiday",
-    "день чего сегодня":"holiday", "какой праздник":"holiday",
-    "праздник сегодня":"holiday",
-    "расскажи факт":"fact_of_day", "интересный факт":"fact_of_day",
-    "факт дня":"fact_of_day", "удиви меня":"fact_of_day",
-    "расскажи анекдот":"tell_joke", "анекдот":"tell_joke",
-    "смешной анекдот":"tell_joke", "пошути":"tell_joke",
-    "дай совет":"daily_tip", "совет дня":"daily_tip",
-    "совет на день":"daily_tip", "что посоветуешь":"daily_tip",
-    "подбрось монетку":"coin_flip", "орёл или решка":"coin_flip",
-    "монетка":"coin_flip", "монету подброси":"coin_flip",
-    "подбрось монету":"coin_flip", "бросить монету":"coin_flip",
-    "подброс монеты":"coin_flip", "кинь монету":"coin_flip",
+    # Мут/размут/пинг
+    "замолчи":"mute","молчи":"mute","мут":"mute","тихо":"mute",
+    "лора":"ping",
+    "размут":"unmute","включись":"unmute","слушай":"unmute","продолжай":"unmute",
 }
 
-CMD_NAMES = {
-    "get_time":"узнать время", "get_date":"узнать дату",
-    "volume_up":"громче", "volume_down":"тише",
-    "volume_max":"максимальная громкость", "volume_min":"минимальная громкость",
-    "sound_off":"выключить звук", "sound_on":"включить звук",
-    "brightness_up":"ярче", "brightness_down":"темнее",
-    "screenshot":"скриншот",
-    "ocr_copy":"скопировать текст с экрана",
-    "ocr_translate":"перевести текст с экрана",
-    "clipboard_copy":"скопировать", "clipboard_paste":"вставить",
-    "clipboard_read":"прочитать буфер", "clipboard_clear":"очистить буфер",
-    "window_minimize":"свернуть окна", "window_maximize":"развернуть окно",
-    "window_close":"закрыть окно", "switch_window":"переключить окно",
-    "get_battery":"заряд батареи", "get_cpu":"загрузка процессора",
-    "disk_space":"место на диске", "get_ip":"мой IP",
-    "speedtest":"скорость интернета", "top_processes":"топ процессов",
-    "wifi_toggle_on":"включить WiFi", "wifi_toggle_off":"выключить WiFi",
-    "wifi_toggle":"переключить WiFi",
-    "open_browser":"открыть браузер", "close_browser":"закрыть браузер",
-    "play_music":"включить музыку", "stop_music":"выключить музыку",
-    "music_next":"следующий трек", "music_prev":"предыдущий трек",
-    "music_pause":"пауза", "music_resume":"продолжить музыку",
-    "create_task":"добавить задачу", "show_tasks":"показать задачи",
-    "clear_tasks":"очистить задачи",
-    "set_timer":"таймер", "set_alarm":"будильник", "stop_alarm":"отключить будильник",
-    "get_weather":"погода", "translate":"перевести фразу",
-    "dictate":"диктовка", "find_file":"найти файл",
-    "remind_me":"напоминание", "calculate":"калькулятор",
-    "shutdown":"выключить компьютер", "restart":"перезагрузить",
-    "sleep":"спящий режим", "cancel_shutdown":"отменить выключение",
-    "break_reminder_on":"включить перерывы", "break_reminder_off":"выключить перерывы",
-    "open_settings":"настройки", "lock_screen":"блокировать экран",
-    "dark_mode":"тёмная тема",
-    "mode_night":"ночной режим", "mode_morning":"утренний режим",
-    "restart_script":"перезапуск кода",
-    "mode_presentation":"режим презентации",
-    "holiday":"праздник сегодня", "fact_of_day":"интересный факт",
-    "tell_joke":"анекдот", "daily_tip":"совет дня", "coin_flip":"монетка",
-}
-
+# Загружаем commands.yaml
 _yaml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "commands.yaml")
 if os.path.exists(_yaml_path):
     try:
@@ -254,196 +306,38 @@ if os.path.exists(_yaml_path):
                 if isinstance(_phrases, list):
                     for _p in _phrases:
                         LOCAL_COMMANDS[_p.lower()] = _cmd
+        print("  [yaml] Команды загружены")
     except Exception as e:
         print(f"  [!] commands.yaml: {e}")
 
 
-# ─── TTS CACHE ───────────────────────────────────────────────────────────────
-
-STATIC_RESPONSES = {
-    "ready":"Готова к работе.",
-    "unmuted":"Снова слушаю.",
-    "unclear_0":"Не поняла.", "unclear_1":"Повтори пожалуйста.", "unclear_2":"Не расслышала.",
-    "ping_0":"Да?", "ping_1":"Я здесь.", "ping_2":"Слушаю.",
-    "vol_up":"Громче.", "vol_down":"Тише.",
-    "vol_max":"Громкость максимальная.", "vol_min":"Громкость минимальная.",
-    "sound_off":"Звук выключен.", "sound_on":"Звук включён.",
-    "bright_up":"Ярче.", "bright_down":"Темнее.",
-    "win_min":"Свёрнуто.", "win_max":"Развёрнуто.",
-    "win_close":"Закрыто.", "win_switch":"Переключаю.",
-    "copied":"Скопировано.", "pasted":"Вставлено.",
-    "buf_empty":"Буфер пуст.", "buf_cleared":"Буфер очищен.",
-    "screenshot":"Скриншот сохранён.",
-    "ocr_done":"Текст скопирован в буфер.",
-    "ocr_empty":"Текст на экране не найден.",
-    "ocr_no_tesseract":"Tesseract не установлен. Установи через winget install UB-Mannheim.TesseractOCR",
-    "wifi_on":"WiFi включён.", "wifi_off":"WiFi выключен.",
-    "browser_closed":"Браузер закрыт.",
-    "music_stopped":"Музыка остановлена.",
-    "music_next":"Следующий трек.", "music_prev":"Предыдущий трек.",
-    "music_pause":"Пауза.", "music_resume":"Продолжаю.",
-    "tasks_empty":"Список пуст.", "tasks_cleared":"Список очищен.",
-    "shutdown":"Выключаю через 10 секунд.",
-    "restart":"Перезагружаю через 10 секунд.",
-    "sleep":"Спящий режим.", "cancel_shutdown":"Выключение отменено.",
-    "breaks_on":"Напоминания о перерывах включены.",
-    "breaks_off":"Напоминания выключены.",
-    "break_time":"Ты работаешь 30 минут. Пора сделать перерыв!",
-    "dictated":"Напечатала.",
-    "goodbye":"До встречи!",
-    "locked":"Экран заблокирован.",
-    "dark_mode":"Тёмная тема включена.",
-    "settings_open":"Открываю настройки.",
-    "mode_night":"Ночной режим. Яркость снижена.",
-    "mode_morning":"Доброе утро! Хром и Телеграм открыты.",
-    "mode_pres":"Режим презентации включён.",
-    "stop_alarm":"Будильник отключён.",
-    "confirm_yes":"Выполняю.",
-    "confirm_no":"Отменила.",
-    "wake_0":"Слушаю.", "wake_1":"Да.", "wake_2":"Здесь.",
-    "coin_heads":"Орёл!", "coin_tails":"Решка!",
-    "timer_done":"Таймер сработал!",
-    "screenshot_done":"Скриншот сохранён.",
-    "morning_done":"Утренний режим включён.",
-    "pres_done":"Режим презентации включён. Телеграм, PowerPoint и Гамма открыты.",
-    "night_done":"Ночной режим. Яркость снижена.",
-}
-
-_cache: dict = {}
-_CACHE_DIR = os.path.join("sounds", "cache")
-
-
-def _generate_cache():
-    os.makedirs(_CACHE_DIR, exist_ok=True)
-
-    async def _gen(text, path):
-        await edge_tts.Communicate(text, EDGE_VOICE, rate="+10%").save(path)
-
-    new_count = 0
-    for key, text in STATIC_RESPONSES.items():
-        path = os.path.join(_CACHE_DIR, f"{key}.mp3")
-        if not os.path.exists(path):
-            try:
-                asyncio.run(_gen(text, path))
-                new_count += 1
-            except Exception:
-                pass
-        if os.path.exists(path):
-            _cache[key] = path
-
-    if new_count:
-        print(f"  [tts] Сгенерировано {new_count} новых фраз")
-    print(f"  [tts] Кэш: {len(_cache)} фраз")
-
-
-def _play_file(path):
-    try:
-        pygame.mixer.music.load(path)
-        pygame.mixer.music.play()
-        while pygame.mixer.music.get_busy():
-            pygame.time.Clock().tick(10)
-        pygame.mixer.music.unload()
-    except Exception:
-        pass
-
-_SFX_DIR = os.path.join("sounds", "sfx")
-
-def _play_sfx(name):
-    """Воспроизвести звуковой эффект из sounds/sfx/<name>.wav (или .mp3).
-    Если файл не найден — молча пропустить."""
-    for ext in ("wav", "mp3"):
-        path = os.path.join(_SFX_DIR, f"{name}.{ext}")
-        if os.path.exists(path):
-            threading.Thread(target=_play_file, args=(path,), daemon=True).start()
-            return
-
-
-def play(key):
-    if key in _cache:
-        print(f"  lora  {STATIC_RESPONSES.get(key, key)}")
-        _play_file(_cache[key])
-    else:
-        speak(STATIC_RESPONSES.get(key, key))
-
-
-def play_random(prefix):
-    keys = [k for k in _cache if k.startswith(prefix)]
-    if keys:
-        chosen = random.choice(keys)
-        print(f"  lora  {STATIC_RESPONSES.get(chosen, chosen)}")
-        _play_file(_cache[chosen])
-    else:
-        speak(random.choice(WAKE_PHRASES))
-
-
-def speak(text):
-    global is_speaking
-    if not text:
-        return
-    print(f"  lora  {text}")
-
-    def _worker():
-        global is_speaking
-        is_speaking = True
-        stop_speaking_event.clear()
-        tmp = None
-        try:
-            async def _synth():
-                tts = edge_tts.Communicate(text, EDGE_VOICE)
-                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                    t = f.name
-                await tts.save(t)
-                return t
-            tmp = asyncio.run(_synth())
-            if tmp and not stop_speaking_event.is_set():
-                pygame.mixer.music.load(tmp)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    if stop_speaking_event.is_set():
-                        pygame.mixer.music.stop()
-                        break
-                    pygame.time.Clock().tick(10)
-                pygame.mixer.music.unload()
-        except Exception:
-            pass
-        finally:
-            is_speaking = False
-            if tmp:
-                try:
-                    os.unlink(tmp)
-                except Exception:
-                    pass
-
-    _worker()
-
-
-def stop_speech():
-    global is_speaking
-    stop_speaking_event.set()
-    try:
-        pygame.mixer.music.stop()
-    except Exception:
-        pass
-    is_speaking = False
-
-
-# ─── VOSK ────────────────────────────────────────────────────────────────────
+# ─── VOSK ───────────────────────────────────────────────────────────────────
 
 class VoskListener:
+    """
+    Vosk с reusable KaldiRecognizer и жёсткой грамматикой.
+    Reset() вместо создания нового объекта → ~0мс накладных расходов.
+    """
     SAMPLE_RATE = 16000
-    BLOCK_SIZE  = 4000
+    BLOCK_SIZE  = 4000   # 250мс
 
-    def __init__(self, phrases):
+    def __init__(self, phrases: list[str]):
         if not os.path.exists(MODEL_PATH):
-            raise RuntimeError(f"Модель Vosk не найдена: {MODEL_PATH}")
+            raise RuntimeError(
+                f"Модель Vosk не найдена: {MODEL_PATH}\n"
+                f"Скачай vosk-model-ru-0.42 с https://alphacephei.com/vosk/models\n"
+                f"и переименуй папку в 'model' рядом с project1.py"
+            )
         vosk.SetLogLevel(-1)
         self._model    = vosk.Model(MODEL_PATH)
         grammar        = json.dumps(phrases + ["[unk]"], ensure_ascii=False)
         self._rec      = vosk.KaldiRecognizer(self._model, self.SAMPLE_RATE, grammar)
+        self._rec.SetWords(True)
+        # Второй recognizer без грамматики — для свободной речи (вопросы в ИИ)
         self._rec_free = vosk.KaldiRecognizer(self._model, self.SAMPLE_RATE)
-        print(f"  [vosk] Готов, фраз: {len(phrases)}")
+        print(f"  [vosk] Готов, фраз в грамматике: {len(phrases)}")
 
-    def listen(self, timeout=8):
+    def listen(self, timeout: float = 8) -> str | None:
         self._rec.Reset()
         q  = queue.Queue()
         t0 = time.time()
@@ -451,13 +345,18 @@ class VoskListener:
         def _cb(indata, frames, t, status):
             q.put(bytes(indata))
 
-        with sd.RawInputStream(samplerate=self.SAMPLE_RATE, blocksize=self.BLOCK_SIZE,
-                               dtype="int16", channels=1, callback=_cb):
+        with sd.RawInputStream(
+            samplerate=self.SAMPLE_RATE,
+            blocksize=self.BLOCK_SIZE,
+            dtype="int16", channels=1,
+            callback=_cb
+        ):
             while time.time() - t0 < timeout:
                 try:
                     data = q.get(timeout=0.05)
                 except queue.Empty:
                     continue
+
                 if self._rec.AcceptWaveform(data):
                     text = json.loads(self._rec.Result()).get("text", "").strip()
                     if text and text != "[unk]":
@@ -466,7 +365,8 @@ class VoskListener:
         text = json.loads(self._rec.FinalResult()).get("text", "").strip()
         return text if text and text != "[unk]" else None
 
-    def listen_free(self, timeout=8):
+    def listen_free(self, timeout: float = 8) -> str | None:
+        """Слушает без грамматики — для свободных вопросов в ИИ."""
         self._rec_free.Reset()
         q  = queue.Queue()
         t0 = time.time()
@@ -474,8 +374,12 @@ class VoskListener:
         def _cb(indata, frames, t, status):
             q.put(bytes(indata))
 
-        with sd.RawInputStream(samplerate=self.SAMPLE_RATE, blocksize=self.BLOCK_SIZE,
-                               dtype="int16", channels=1, callback=_cb):
+        with sd.RawInputStream(
+            samplerate=self.SAMPLE_RATE,
+            blocksize=self.BLOCK_SIZE,
+            dtype="int16", channels=1,
+            callback=_cb
+        ):
             while time.time() - t0 < timeout:
                 try:
                     data = q.get(timeout=0.05)
@@ -490,22 +394,231 @@ class VoskListener:
         return text if text else None
 
 
-# ─── ИИ ──────────────────────────────────────────────────────────────────────
+# ─── TTS ────────────────────────────────────────────────────────────────────
+
+def _generate_cache():
+    os.makedirs(os.path.join("sounds","cache"), exist_ok=True)
+    os.makedirs(os.path.join("sounds","wake"),  exist_ok=True)
+    os.makedirs(os.path.join("sounds","resp"),  exist_ok=True)
+
+    async def _gen(text, path):
+        await edge_tts.Communicate(text, EDGE_VOICE, rate="+10%").save(path)
+
+    for i, phrase in enumerate(WAKE_PHRASES):
+        path = os.path.join("sounds","wake", f"wake_{i}.mp3")
+        if not os.path.exists(path):
+            try: asyncio.run(_gen(phrase, path))
+            except Exception: pass
+
+    for key, phrase in CACHED_PHRASES.items():
+        path = os.path.join("sounds","cache", f"{key}.mp3")
+        if not os.path.exists(path):
+            try: asyncio.run(_gen(phrase, path))
+            except Exception: pass
+        if os.path.exists(path):
+            _phrase_cache[key] = path
+
+    # Генерируем все ответы команд
+    total = len(ALL_RESPONSES)
+    new_count = 0
+    for key, phrase in ALL_RESPONSES.items():
+        path = os.path.join("sounds","resp", f"{key}.mp3")
+        if not os.path.exists(path):
+            try:
+                asyncio.run(_gen(phrase, path))
+                new_count += 1
+            except Exception:
+                pass
+        if os.path.exists(path):
+            _resp_cache[key] = path
+    if new_count:
+        print(f"  [cache] Сгенерировано {new_count} новых фраз")
+    print(f"  [cache] Загружено {len(_resp_cache)}/{total} ответов")
+
+
+def _play_file(path: str):
+    try:
+        pygame.mixer.music.load(path)
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy():
+            pygame.time.Clock().tick(10)
+        pygame.mixer.music.unload()
+    except Exception:
+        pass
+
+
+def play_cached(key: str):
+    if key in _phrase_cache:
+        _log_lora(CACHED_PHRASES.get(key, key))
+        _play_file(_phrase_cache[key])
+    elif key in CACHED_PHRASES:
+        speak(CACHED_PHRASES[key])
+
+
+def play_unclear():
+    keys = [k for k in _phrase_cache if k.startswith("unclear")]
+    if keys:
+        chosen = random.choice(keys)
+        _log_lora(CACHED_PHRASES.get(chosen, chosen))
+        _play_file(_phrase_cache[chosen])
+    else:
+        speak(random.choice(["Не поняла", "Повтори пожалуйста", "Не расслышала"]))
+
+
+def play_wake():
+    files = [f for f in os.listdir(os.path.join("sounds","wake")) if f.endswith(".mp3")] \
+            if os.path.exists(os.path.join("sounds","wake")) else []
+    if files:
+        _play_file(os.path.join("sounds","wake", random.choice(files)))
+    else:
+        speak(random.choice(WAKE_PHRASES))
+
+
+# ─── Silero TTS ─────────────────────────────────────────────────────────────
+_silero_model  = None
+_silero_sample = 48000
+
+def _init_silero():
+    global _silero_model, _silero_sample
+    try:
+        import torch
+        device = torch.device("cpu")
+        model, _ = torch.hub.load(
+            repo_or_dir="snakers4/silero-models",
+            model="silero_tts",
+            language="ru",
+            speaker="v4_ru",
+            verbose=False,
+        )
+        model.to(device)
+        _silero_model  = model
+        _silero_sample = 48000
+        print("  [tts] Silero загружен")
+        return True
+    except Exception as e:
+        print(f"  [!] Silero недоступен: {e}")
+        return False
+
+def _speak_silero(text: str):
+    """Синтез через Silero — офлайн ~100-200мс."""
+    global is_speaking
+    is_speaking = True
+    stop_speaking_event.clear()
+    try:
+        import torch
+        audio = _silero_model.apply_tts(
+            text=text,
+            speaker="baya",        # женский голос
+            sample_rate=_silero_sample,
+            put_accent=True,
+            put_yo=True,
+        )
+        # audio — tensor float32, конвертируем в int16 для pygame
+        import numpy as np
+        audio_np = (audio.numpy() * 32767).astype("int16")
+        # pygame stereo требует 2D массив (samples, 2)
+        audio_np = np.column_stack([audio_np, audio_np])
+        sound = pygame.sndarray.make_sound(audio_np)
+        channel = sound.play()
+        while channel.get_busy():
+            if stop_speaking_event.is_set():
+                channel.stop()
+                break
+            pygame.time.Clock().tick(10)
+    except Exception:
+        _speak_edge(text)   # fallback
+    finally:
+        is_speaking = False
+
+def _speak_edge(text: str):
+    """Fallback — edge-tts через интернет."""
+    global is_speaking
+    is_speaking = True
+    stop_speaking_event.clear()
+    tmp = None
+    try:
+        async def _synth():
+            tts = edge_tts.Communicate(text, EDGE_VOICE)
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                t = f.name
+            await tts.save(t)
+            return t
+        tmp = asyncio.run(_synth())
+        if tmp and not stop_speaking_event.is_set():
+            pygame.mixer.music.load(tmp)
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                if stop_speaking_event.is_set():
+                    pygame.mixer.music.stop()
+                    break
+                pygame.time.Clock().tick(10)
+            pygame.mixer.music.unload()
+    except Exception:
+        pass
+    finally:
+        is_speaking = False
+        if tmp:
+            try: os.unlink(tmp)
+            except Exception: pass
+
+def speak_resp(key: str) -> bool:
+    """Мгновенное воспроизведение кешированного ответа. Возвращает True если нашёл."""
+    if key in _resp_cache:
+        _log_lora(ALL_RESPONSES[key])
+        _play_file(_resp_cache[key])
+        return True
+    return False
+
+
+def speak(text: str):
+    global is_speaking
+    if not text: return
+    _log_lora(text)
+
+    def _worker():
+        if _silero_model is not None:
+            _speak_silero(text)
+        else:
+            _speak_edge(text)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join()
+
+
+def stop_speech():
+    global is_speaking
+    stop_speaking_event.set()
+    try: pygame.mixer.music.stop()
+    except Exception: pass
+    is_speaking = False
+
+
+# ─── КОНСОЛЬ ────────────────────────────────────────────────────────────────
+
+def _log_you(text: str):
+    print(f"  you   {text}")
+
+def _log_lora(text: str, ms: int | None = None):
+    suffix = f"  [{ms}мс]" if ms is not None else ""
+    print(f"  lora  {text}{suffix}")
+
+
+# ─── ИИ (отключён) ──────────────────────────────────────────────────────────
 
 AI_SYSTEM_PROMPT = (
     "Тебя зовут Лора — голосовой ассистент. Общаешься как друг — просто, с лёгким юмором. "
     "Отвечай на русском. Простой вопрос — 1 предложение. Только текст."
 )
 
-def ask_ai(query):
-    if not AI_ENABLED or not _groq_client:
-        return ""
+def ask_ai(query: str) -> str:
+    if not AI_ENABLED or not _groq_client: return ""
     try:
         r = _groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile", max_tokens=150, timeout=8,
             messages=[
-                {"role": "system", "content": AI_SYSTEM_PROMPT},
-                {"role": "user",   "content": f"[{datetime.now().strftime('%H:%M')}] {query}"},
+                {"role":"system","content":AI_SYSTEM_PROMPT},
+                {"role":"user","content":f"[{datetime.now().strftime('%H:%M')}] {query}"},
             ],
         )
         return r.choices[0].message.content.strip()
@@ -513,371 +626,263 @@ def ask_ai(query):
         return f"Ошибка: {e}"
 
 
-# ─── OCR ─────────────────────────────────────────────────────────────────────
-
-def _ocr_grab_text():
-    """
-    Делает скриншот В ПАМЯТИ (файл не сохраняется),
-    читает текст через pytesseract.
-    Возвращает: строку текста, None, или "no_tesseract".
-    """
-    try:
-        import pyautogui
-        import pytesseract
-
-        img  = pyautogui.screenshot()   # PIL Image в памяти, без сохранения
-        text = pytesseract.image_to_string(img, lang="rus+eng").strip()
-        text = re.sub(r'[^\w\s.,!?:;\-\u2014\u00ab\u00bb"\'\(\)\n]', '', text)
-        text = re.sub(r'\n{3,}', '\n\n', text).strip()
-        return text if text else None
-
-    except ImportError:
-        return "no_tesseract"
-    except Exception:
-        return None
-
-
-def ocr_copy():
-    """Копирует весь текст с экрана в буфер обмена."""
-    text = _ocr_grab_text()
-    if text == "no_tesseract":
-        return "ocr_no_tesseract"
-    if not text:
-        return "ocr_empty"
-    try:
-        import pyperclip
-        pyperclip.copy(text)
-        preview = text[:60].replace('\n', ' ')
-        return f"Скопировал {len(text)} символов. Начало: {preview}{'…' if len(text) > 60 else ''}"
-    except Exception:
-        return "ocr_empty"
-
-
-def ocr_translate():
-    """Читает текст с экрана и переводит на русский."""
-    text = _ocr_grab_text()
-    if text == "no_tesseract":
-        return "ocr_no_tesseract"
-    if not text:
-        return "ocr_empty"
-
-    chunk = text[:500]
-
-    if AI_ENABLED:
-        try:
-            r = _groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile", max_tokens=300, timeout=10,
-                messages=[
-                    {"role": "system", "content":
-                        "Переведи следующий текст на русский язык. "
-                        "Верни только перевод, без пояснений."},
-                    {"role": "user", "content": chunk},
-                ],
-            )
-            return r.choices[0].message.content.strip()
-        except Exception:
-            pass
-
-    try:
-        from translate import Translator
-        sentences = re.split(r'(?<=[.!?])\s+', chunk)[:5]
-        t = Translator(from_lang="en", to_lang="ru")
-        translated = [t.translate(s.strip()) for s in sentences if s.strip()]
-        return " ".join(translated) if translated else "Не удалось перевести."
-    except Exception:
-        return "Не удалось перевести."
-
-
-# ─── СЛОТ-ЭКСТРАКТОР ─────────────────────────────────────────────────────────
+# ─── СЛОТ-ЭКСТРАКТОР (из новой версии) ──────────────────────────────────────
 
 class SlotExtractor:
     @staticmethod
-    def time_to_seconds(text):
+    def time_to_seconds(text: str) -> int | None:
         text = text.lower()
-        if any(x in text for x in ["полчаса", "пол часа"]):
-            return 1800
+        if any(x in text for x in ["полчаса","пол часа"]): return 1800
+        if re.search(r'(?<!\d\s)час(?!а?\s*\d)', text): return 3600
         total = 0
-        for pat, mul in [(r'(\d+)\s*час', 3600), (r'(\d+)\s*мин', 60), (r'(\d+)\s*сек', 1)]:
+        for pat, mul in [(r'(\d+)\s*час',3600),(r'(\d+)\s*мин',60),(r'(\d+)\s*сек',1)]:
             for m in re.findall(pat, text):
                 total += int(m) * mul
         if total == 0:
             nums = re.findall(r'\d+', text)
-            if nums:
-                total = int(nums[0]) * 60
+            if nums: total = int(nums[0]) * 60
         return total if total > 0 else None
 
 
-# ─── КОМАНДЫ ─────────────────────────────────────────────────────────────────
+# ─── КОМАНДЫ ────────────────────────────────────────────────────────────────
 
-listen_fn = None
-
-_vol_obj = None
+listen_fn = None   # устанавливается в main()
 
 def _vol():
-    return _vol_obj
+    try:
+        from ctypes import POINTER, cast
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        i = AudioUtilities.GetSpeakers().Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        return cast(i, POINTER(IAudioEndpointVolume))
+    except Exception as e:
+        return None
 
 def _vol_init():
-    global _vol_obj
-    try:
-        from pycaw.pycaw import AudioUtilities
-        _vol_obj = AudioUtilities.GetSpeakers().EndpointVolume
-        print(f"  [pycaw] Громкость: {int(round(_vol_obj.GetMasterVolumeLevelScalar()*100))}%")
-    except Exception as e:
-        print(f"  [!] pycaw недоступен: {e}")
+    """Инициализируем pycaw один раз при старте."""
+    v = _vol()
+    if v is None:
+        print("  [!] pycaw недоступен — громкость через клавиши")
+    else:
+        pct = int(round(v.GetMasterVolumeLevelScalar() * 100))
+        print(f"  [pycaw] Громкость: {pct}%")
 
-def _wifi_status():
+def _get_vol_pct() -> int | None:
+    v = _vol()
+    return int(round(v.GetMasterVolumeLevelScalar() * 100)) if v else None
+
+def _wifi_status() -> bool:
     try:
-        r = subprocess.run(["netsh","interface","show","interface","name=Wi-Fi"],
-                           capture_output=True, text=True, timeout=3)
+        r = subprocess.run(
+            ["netsh","interface","show","interface","name=Wi-Fi"],
+            capture_output=True, text=True, timeout=3)
         return "connect" in r.stdout.lower()
     except Exception:
         return False
 
-def get_time():
-    return f"Сейчас {datetime.now().strftime('%H:%M')}."
-
-def get_date():
+def get_time()  -> str: return f"Сейчас {datetime.now().strftime('%H:%M')}."
+def get_date()  -> str:
     mo = ["января","февраля","марта","апреля","мая","июня",
           "июля","августа","сентября","октября","ноября","декабря"]
     n  = datetime.now()
     wd = ["понедельник","вторник","среда","четверг","пятница","суббота","воскресенье"][n.weekday()]
     return f"Сегодня {n.day} {mo[n.month-1]} {n.year}, {wd}."
 
-def _send_vol_key(key_code):
-    """Эмулирует медиаклавишу — Windows показывает плашку громкости."""
-    os.system(f"powershell.exe -WindowStyle Hidden (new-object -com wscript.shell).SendKeys([char]{key_code})")
-
-def volume_up():
+def volume_up() -> str:
     v = _vol()
     if v:
-        cur = v.GetMasterVolumeLevelScalar()
-        step = VOL_STEP_HIGH if cur >= 0.5 else VOL_STEP_LOW
-        new = min(1.0, cur + step)
+        new = min(1.0, v.GetMasterVolumeLevelScalar() + 0.15)
         v.SetMasterVolumeLevelScalar(new, None)
-    _send_vol_key(175)
-    return "vol_up"
+        pct = int(round(new * 100))
+        # округляем до ближайших 5% для кеша
+        pct5 = round(pct / 5) * 5
+        key = f"volume_up_{pct5}"
+        if not speak_resp(key):
+            speak(f"Громкость {pct}%.")
+        return ""
+    try:
+        import pyautogui
+        for _ in range(5): pyautogui.press("volumeup")
+        speak_resp("volume_up_fallback") or speak("Громкость увеличена.")
+    except Exception:
+        speak_resp("volume_up_fallback") or speak("Громкость увеличена.")
+    return ""
 
-def volume_down():
+def volume_down() -> str:
     v = _vol()
     if v:
-        cur = v.GetMasterVolumeLevelScalar()
-        step = VOL_STEP_HIGH if cur > 0.5 else VOL_STEP_LOW
-        new = max(0.0, cur - step)
+        new = max(0.0, v.GetMasterVolumeLevelScalar() - 0.15)
         v.SetMasterVolumeLevelScalar(new, None)
-    _send_vol_key(174)
-    return "vol_down"
+        pct = int(round(new * 100))
+        pct5 = round(pct / 5) * 5
+        key = f"volume_up_{pct5}"
+        if not speak_resp(key):
+            speak(f"Громкость {pct}%.")
+        return ""
+    try:
+        import pyautogui
+        for _ in range(5): pyautogui.press("volumedown")
+        speak_resp("volume_down_fallback") or speak("Громкость уменьшена.")
+    except Exception:
+        speak_resp("volume_down_fallback") or speak("Громкость уменьшена.")
+    return ""
 
-def volume_max():
+def volume_max() -> str:
     v = _vol()
     if v: v.SetMasterVolumeLevelScalar(1.0, None)
-    _send_vol_key(175)
+    speak_resp("volume_max"); return ""
 
-def volume_min():
+def volume_min() -> str:
     v = _vol()
     if v: v.SetMasterVolumeLevelScalar(0.0, None)
-    _send_vol_key(174)
+    speak_resp("volume_min"); return ""
 
-def sound_off():
+def sound_off() -> str:
     v = _vol()
     if v: v.SetMute(1, None)
-    _send_vol_key(173)  # 173 = VK_VOLUME_MUTE
+    else: os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]173)")
+    speak_resp("sound_off"); return ""
 
-def sound_on():
+def sound_on() -> str:
     v = _vol()
     if v: v.SetMute(0, None)
-    _send_vol_key(173)
+    else: os.system("powershell.exe (new-object -com wscript.shell).SendKeys([char]173)")
+    speak_resp("sound_on"); return ""
 
-def brightness_up():
+def brightness_up() -> str:
     try:
         import screen_brightness_control as sbc
         new = min(100, sbc.get_brightness()[0] + 20)
         sbc.set_brightness(new)
-        return f"Яркость {new}%."
+        key = f"brightness_{round(new/20)*20}"
+        speak_resp(key) or speak(f"Яркость {new}%.")
+        return ""
     except Exception:
         os.system("powershell (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods)"
                   ".WmiSetBrightness(1,[math]::Min(100,((Get-WmiObject -Namespace root/WMI "
                   "-Class WmiMonitorBrightness).CurrentBrightness)+20))")
-        return "bright_up"
+        speak_resp("brightness_up"); return ""
 
-def brightness_down():
+def brightness_down() -> str:
     try:
         import screen_brightness_control as sbc
         new = max(0, sbc.get_brightness()[0] - 20)
         sbc.set_brightness(new)
-        return f"Яркость {new}%."
+        key = f"brightness_{round(new/20)*20}"
+        speak_resp(key) or speak(f"Яркость {new}%.")
+        return ""
     except Exception:
         os.system("powershell (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods)"
                   ".WmiSetBrightness(1,[math]::Max(0,((Get-WmiObject -Namespace root/WMI "
                   "-Class WmiMonitorBrightness).CurrentBrightness)-20))")
-        return "bright_down"
+        speak_resp("brightness_down"); return ""
 
-def wifi_toggle_on():
-    os.system('netsh interface set interface "Wi-Fi" enabled')
+def wifi_toggle_on()  -> str:
+    os.system('netsh interface set interface "Wi-Fi" enabled');  speak_resp("wifi_on"); return ""
+def wifi_toggle_off() -> str:
+    os.system('netsh interface set interface "Wi-Fi" disabled'); speak_resp("wifi_off"); return ""
+def wifi_toggle()     -> str:
+    if _wifi_status():
+        os.system('netsh interface set interface "Wi-Fi" disabled'); return "WiFi выключен."
+    os.system('netsh interface set interface "Wi-Fi" enabled'); return "WiFi включён."
 
-def wifi_toggle_off():
-    os.system('netsh interface set interface "Wi-Fi" disabled')
-
-def wifi_toggle():
-    if _wifi_status(): os.system('netsh interface set interface "Wi-Fi" disabled')
-    else:              os.system('netsh interface set interface "Wi-Fi" enabled')
-
-def screenshot():
+def screenshot() -> str:
     try:
         import pyautogui
-        _play_sfx("camera")
         pyautogui.screenshot(f"screenshot_{int(time.time())}.png")
-        play("screenshot_done")
-    except Exception:
-        pass
+        speak_resp("screenshot"); return ""
+    except Exception: return None
 
-def clipboard_copy():
-    import pyautogui; pyautogui.hotkey("ctrl", "c")
-
-def clipboard_paste():
-    import pyautogui; pyautogui.hotkey("ctrl", "v")
-
-def clipboard_clear():
-    try:
-        import pyperclip; pyperclip.copy("")
-    except Exception:
-        pass
-
-def clipboard_read():
+def clipboard_copy()  -> str:
+    import pyautogui; pyautogui.hotkey("ctrl","c"); speak_resp("clipboard_copy"); return ""
+def clipboard_paste() -> str:
+    import pyautogui; pyautogui.hotkey("ctrl","v"); speak_resp("clipboard_paste"); return ""
+def clipboard_read()  -> str:
     try:
         import pyperclip; t = pyperclip.paste()
-        return f"В буфере: {t[:200]}." if t else "buf_empty"
-    except Exception:
-        return "buf_empty"
+        return f"В буфере: {t[:200]}" if t else "Буфер пуст."
+    except Exception: return None
 
-def switch_window():
-    import pyautogui; pyautogui.hotkey("alt", "tab")
+def switch_window()   -> str:
+    import pyautogui; pyautogui.hotkey("alt","tab"); speak_resp("switch_window"); return ""
+def window_minimize() -> str:
+    import pyautogui; pyautogui.hotkey("win","d");   speak_resp("window_minimize"); return ""
+def window_maximize() -> str:
+    import pyautogui; pyautogui.hotkey("win","up");  speak_resp("window_maximize"); return ""
+def window_close()    -> str:
+    import pyautogui; pyautogui.hotkey("alt","f4");  speak_resp("window_close"); return ""
 
-def window_minimize():
-    import pyautogui; pyautogui.hotkey("win", "d")
-
-def window_maximize():
-    import pyautogui; pyautogui.hotkey("win", "up")
-
-def window_close():
-    import pyautogui; pyautogui.hotkey("alt", "f4")
-
-def get_battery():
+def get_battery() -> str:
     try:
         import psutil; b = psutil.sensors_battery()
         if b is None: return "Батарея не найдена."
         return f"Заряд {int(b.percent)}%, {'заряжается' if b.power_plugged else 'на батарее'}."
-    except Exception:
-        return "Не удалось."
+    except Exception: return None
 
-def get_cpu():
+def get_cpu() -> str:
     try:
         import psutil
         return f"Процессор {psutil.cpu_percent(interval=1)}%, память {psutil.virtual_memory().percent}%."
-    except Exception:
-        return "Не удалось."
+    except Exception: return None
 
-def get_ip():
-    try:
-        import urllib.request
-        ip = urllib.request.urlopen("https://api.ipify.org", timeout=4).read().decode()
-        return f"Твой IP: {ip}."
-    except Exception:
-        return "Не удалось получить IP."
-
-def disk_space():
-    try:
-        import shutil
-        total, used, free = shutil.disk_usage("/")
-        return f"Диск C: занято {used//2**30} из {total//2**30} ГБ, свободно {free//2**30} ГБ."
-    except Exception:
-        return "Не удалось."
-
-def top_processes():
-    try:
-        import psutil
-        procs = sorted(psutil.process_iter(['name','cpu_percent']),
-                       key=lambda p: p.info['cpu_percent'], reverse=True)[:3]
-        names = ", ".join(p.info['name'] for p in procs if p.info['cpu_percent'] > 0)
-        return f"Топ: {names}." if names else "Все процессы в норме."
-    except Exception:
-        return "Не удалось."
-
-def speedtest():
-    try:
-        import urllib.request
-        start = time.time()
-        urllib.request.urlopen("https://www.google.com", timeout=5)
-        return f"Пинг до Google: {int((time.time()-start)*1000)} мс."
-    except Exception:
-        return "Нет интернета."
-
-def lock_screen():
-    os.system("rundll32.exe user32.dll,LockWorkStation")
-
-def dark_mode():
-    for prop in ("AppsUseLightTheme", "SystemUsesLightTheme"):
-        subprocess.run(["powershell", "-Command",
-            f"Set-ItemProperty -Path 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion"
-            f"\\Themes\\Personalize' -Name '{prop}' -Value 0"],
-            check=False, capture_output=True)
-
-def open_settings():
-    subprocess.Popen("ms-settings:", shell=True)
-
-def music_next():
-    import pyautogui; pyautogui.hotkey("ctrl", "right")
-
-def music_prev():
-    import pyautogui; pyautogui.hotkey("ctrl", "left")
-
-def music_pause():
-    import pyautogui; pyautogui.press("space")
-
-def music_resume():
-    import pyautogui; pyautogui.press("space")
-
-def open_app(name):
+def open_app(name: str) -> str:
     path    = APP_PATHS.get(name.lower(), name)
     ru_name = APP_NAMES_RU.get(name.lower(), name.capitalize())
+    app_key_map = {
+        "телеграм":"app_telegram","telegram":"app_telegram",
+        "дискорд":"app_discord","discord":"app_discord",
+        "спотифай":"app_spotify","spotify":"app_spotify",
+        "хром":"app_chrome","chrome":"app_chrome",
+        "блокнот":"app_notepad","notepad":"app_notepad",
+        "калькулятор":"app_calculator","calculator":"app_calculator",
+        "проводник":"app_explorer","explorer":"app_explorer",
+        "стим":"app_steam","steam":"app_steam",
+        "obs":"app_obs","код":"app_vscode","vscode":"app_vscode",
+        "word":"app_word","ворд":"app_word",
+        "excel":"app_excel","эксель":"app_excel",
+    }
     try:
-        subprocess.Popen(path); return f"{ru_name} открыт."
+        subprocess.Popen(path)
+        key = app_key_map.get(name.lower())
+        if not key or not speak_resp(key):
+            speak(f"{ru_name} открыт.")
+        return ""
     except Exception:
         try:
-            subprocess.Popen(path, shell=True); return f"{ru_name} открыт."
-        except Exception:
-            return None
+            subprocess.Popen(path, shell=True)
+            key = app_key_map.get(name.lower())
+            if not key or not speak_resp(key):
+                speak(f"{ru_name} открыт.")
+            return ""
+        except Exception: return None
 
-def close_app(name):
-    process_map = {
-        "телеграм":"telegram", "telegram":"telegram",
-        "дискорд":"discord",   "discord":"discord",
-        "хром":"chrome",       "chrome":"chrome",
-        "блокнот":"notepad",   "notepad":"notepad",
-        "ворд":"winword",      "word":"winword",
-        "эксель":"excel",      "excel":"excel",
-        "стим":"steam",        "steam":"steam",
-        "хапп":"Happ",         "happ":"Happ",
-    }
+def close_app(name: str) -> str:
+    pm = {"telegram":"telegram","телеграм":"telegram","discord":"discord","дискорд":"discord",
+          "spotify":"spotify","спотифай":"spotify","chrome":"chrome","хром":"chrome",
+          "notepad":"notepad","блокнот":"notepad","word":"winword","excel":"excel",
+          "obs":"obs64","steam":"steam","vscode":"code","код":"code"}
     ru_name = APP_NAMES_RU.get(name.lower(), name.capitalize())
-    proc = process_map.get(name.lower(), name)
     try:
-        subprocess.run(
-            ["powershell.exe", f"Stop-Process -Name {proc} -ErrorAction SilentlyContinue"],
-            check=False)
+        subprocess.run(["powershell.exe",
+            f"Stop-Process -Name {pm.get(name.lower(),name)} -ErrorAction SilentlyContinue"],check=False)
         return f"{ru_name} закрыт."
-    except Exception:
-        return None
+    except Exception: return None
 
-
-def open_browser():
+def open_browser() -> str:
     speak("Какой сайт?"); site = listen_fn()
     if not site: return None
     url = (f"https://{site}" if "." in site and " " not in site
-           else f"https://www.google.com/search?q={site.replace(' ', '+')}")
-    webbrowser.open(url)
-    return f"Открываю {site}."
+           else f"https://www.google.com/search?q={site.replace(' ','+')}")
+    webbrowser.open(url); return f"Открываю {site}."
 
-def open_folder(folder_name=""):
+def close_browser() -> str:
+    for b in ("chrome","firefox","msedge","opera","brave"):
+        try: subprocess.run(["powershell.exe",
+            f"Stop-Process -Name {b} -ErrorAction SilentlyContinue"],check=False)
+        except Exception: pass
+    return "Браузер закрыт."
+
+def open_folder(folder_name: str = "") -> str:
     folders = {
         "документы":    os.path.expanduser("~/Documents"),
         "загрузки":     os.path.expanduser("~/Downloads"),
@@ -889,12 +894,10 @@ def open_folder(folder_name=""):
     if not folder_name:
         speak("Какую папку?"); folder_name = listen_fn() or ""
     path = folders.get(folder_name.lower(), folder_name)
-    if os.path.exists(path):
-        os.startfile(path)
-        return f"{folder_name.capitalize()} открыта."
+    if os.path.exists(path): os.startfile(path); return f"{folder_name.capitalize()} открыта."
     return None
 
-def get_weather():
+def get_weather() -> str:
     speak("Какой город?"); city = listen_fn()
     if not city: return None
     if not WEATHER_API_KEY: return "Добавь WEATHER_API_KEY в .env."
@@ -906,65 +909,48 @@ def get_weather():
             d = json.loads(r.read().decode())
         return (f"В {city}: {d['weather'][0]['description']}, "
                 f"{round(d['main']['temp'])}°, ощущается {round(d['main']['feels_like'])}°.")
-    except Exception:
-        return "Не удалось получить погоду."
+    except Exception: return "Не удалось получить погоду."
 
-def translate():
-    speak("Скажи фразу."); t = listen_fn()
-    if not t: return None
-    try:
-        from translate import Translator
-        return f"По-английски: {Translator(from_lang='ru', to_lang='en').translate(t)}"
-    except Exception:
-        if AI_ENABLED: return ask_ai(f"Переведи на английский: {t}")
-        return "Не удалось."
-
-def create_task():
+def create_task() -> str:
     speak("Что добавить?"); t = listen_fn()
     if not t: return None
-    with open("список дел.txt", "a", encoding="utf-8") as f:
-        f.write(f"✅ {t}\n")
+    with open("список дел.txt","a",encoding="utf-8") as f: f.write(f"✅ {t}\n")
     return f"Добавила: {t}."
 
-def show_tasks():
+def show_tasks() -> str:
     try:
-        with open("список дел.txt", encoding="utf-8") as f:
-            tasks = f.read().strip()
-        if not tasks: return "tasks_empty"
+        with open("список дел.txt",encoding="utf-8") as f: tasks = f.read().strip()
+        if not tasks: return "Список пуст."
         lines = tasks.splitlines()
-        return f"Задач {len(lines)}: " + "; ".join(l.replace("✅ ", "") for l in lines[:5]) + "."
-    except Exception:
-        return "tasks_empty"
+        return f"Задач {len(lines)}: " + "; ".join(l.replace("✅ ","") for l in lines[:5]) + "."
+    except Exception: return None
 
-def clear_tasks():
-    open("список дел.txt", "w", encoding="utf-8").close()
-    return "tasks_cleared"
+def clear_tasks() -> str:
+    open("список дел.txt","w",encoding="utf-8").close(); return "Список очищен."
 
-def play_music():
+def play_music() -> str:
     try:
         files = [f for f in os.listdir("music") if f.endswith((".mp3",".wav",".flac"))]
         if not files: return "В папке music нет файлов."
         f = os.path.join("music", random.choice(files))
         os.startfile(f)
         return f"Включаю {os.path.splitext(os.path.basename(f))[0]}."
-    except Exception:
-        return None
+    except Exception: return None
 
-def stop_music():
+def stop_music() -> str:
     for p in ("wmplayer","vlc","spotify","groove","musicbee"):
-        try:
-            subprocess.run(["powershell.exe",
-                f"Stop-Process -Name {p} -ErrorAction SilentlyContinue"], check=False)
-        except Exception:
-            pass
+        try: subprocess.run(["powershell.exe",
+            f"Stop-Process -Name {p} -ErrorAction SilentlyContinue"],check=False)
+        except Exception: pass
+    speak_resp("stop_music"); return ""
 
-def set_timer(seconds):
-    def _t(): time.sleep(seconds); _play_sfx("timer"); play("timer_done")
+def set_timer(seconds: int) -> str:
+    def _t(): time.sleep(seconds); speak("Таймер сработал!")
     threading.Thread(target=_t, daemon=True).start()
     m, s = divmod(seconds, 60)
     return f"Таймер на {m} мин." if m else f"Таймер на {s} сек."
 
-def set_alarm(hour, minute):
+def set_alarm(hour: int, minute: int) -> str:
     global alarm_thread
     def _a():
         while True:
@@ -976,32 +962,33 @@ def set_alarm(hour, minute):
     alarm_thread.start()
     return f"Будильник на {hour:02d}:{minute:02d}."
 
-def stop_alarm():
-    global alarm_thread; alarm_thread = None
-
-def break_reminder_on():
+def stop_alarm()         -> str: global alarm_thread; alarm_thread = None; speak_resp("alarm_off"); return ""
+def break_reminder_on()  -> str:
     global break_reminder_active
-    if break_reminder_active: return
+    if break_reminder_active: speak_resp("break_already"); return ""
     break_reminder_active = True
     def _r():
         while break_reminder_active:
             time.sleep(1800)
-            if break_reminder_active: play("break_time")
+            if break_reminder_active: speak("Ты работаешь 30 минут. Перерыв!")
     threading.Thread(target=_r, daemon=True).start()
+    speak_resp("break_on"); return ""
 
-def break_reminder_off():
-    global break_reminder_active; break_reminder_active = False
+def break_reminder_off() -> str:
+    global break_reminder_active; break_reminder_active = False; speak_resp("break_off"); return ""
+def shutdown()           -> str: os.system("shutdown /s /t 10"); speak_resp("shutdown"); return ""
+def restart()            -> str: os.system("shutdown /r /t 10"); speak_resp("restart"); return ""
+def sleep_pc()           -> str: os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0"); speak_resp("sleep"); return ""
+def cancel_shutdown()    -> str: os.system("shutdown /a"); speak_resp("cancel_shutdown"); return ""
 
-def dictate():
+def dictate() -> str:
     speak("Говори — напечатаю."); t = listen_fn()
     if not t: return None
     try:
-        import pyautogui, pyperclip; pyperclip.copy(t); pyautogui.hotkey("ctrl","v")
-        return "dictated"
-    except Exception:
-        return None
+        import pyautogui, pyperclip; pyperclip.copy(t); pyautogui.hotkey("ctrl","v"); return "Напечатала."
+    except Exception: return None
 
-def find_file():
+def find_file() -> str:
     speak("Что ищем?"); name = listen_fn()
     if not name: return None
     try:
@@ -1011,15 +998,14 @@ def find_file():
             capture_output=True, text=True, timeout=10)
         found = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
         return f"Нашла: {found[0]}." if found else f"{name} не найден."
-    except Exception:
-        return None
+    except Exception: return None
 
-def remind_me(minutes, text="Напоминание!"):
+def remind_me(minutes: int, text: str = "Напоминание!") -> str:
     def _r(): time.sleep(minutes*60); speak(f"Напоминаю: {text}")
     threading.Thread(target=_r, daemon=True).start()
     return f"Напомню через {minutes} мин."
 
-def calculate(expression=""):
+def calculate(expression: str = "") -> str:
     reps = {"плюс":"+","минус":"-","умножить на":"*","умножить":"*",
             "разделить на":"/","разделить":"/","в степени":"**"}
     expr = expression.lower()
@@ -1030,188 +1016,87 @@ def calculate(expression=""):
         result = eval(safe)
         if isinstance(result, float) and result == int(result): result = int(result)
         return f"{expression} равно {result}."
-    except Exception:
-        return None
+    except Exception: return None
 
-def _arm_cancel(seconds=15):
-    """Активирует _cancel_event на N секунд — Escape отменяет команду."""
-    _cancel_event.set()
-    def _clear(): time.sleep(seconds); _cancel_event.clear()
-    threading.Thread(target=_clear, daemon=True).start()
+def break_code(): speak_resp("farewell") or speak("До встречи!"); time.sleep(1); exit()
 
-def shutdown():
-    os.system("shutdown /s /t 15")
-    _arm_cancel(15)
-    return "Выключаю через 15 секунд. Escape — отменить."
 
-def restart():
-    os.system("shutdown /r /t 15")
-    _arm_cancel(15)
-    return "Перезагружаю через 15 секунд. Escape — отменить."
+# ─── РЕЖИМЫ ─────────────────────────────────────────────────────────────────
 
-def sleep_pc():
-    _arm_cancel(15)
-    def _do(): time.sleep(15); os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
-    threading.Thread(target=_do, daemon=True).start()
-    return "Спящий режим через 15 секунд. Escape — отменить."
-
-def restart_script():
-    import sys
-    speak("Перезапускаю.")
-    os.execv(sys.executable, [sys.executable] + sys.argv)
-
-def cancel_shutdown(): os.system("shutdown /a"); return "Выключение отменено."
-
-def mode_night():
+def mode_night() -> str:
     brightness_down(); brightness_down(); brightness_down()
-    play("night_done")
-
-def mode_morning():
-    brightness_up(); brightness_up()
-    open_app("хром"); time.sleep(0.3); open_app("телеграм")
-    play("morning_done")
-
-def mode_presentation():
-    open_app("телеграм")
-    open_app("powerpoint")
-    import webbrowser
-    webbrowser.open("https://gamma.app")
-    play("pres_done")
-
-def break_code():
-    play("goodbye")
-    _exit_event.set()
-
-
-# ─── НЕЧЁТКИЙ ПОИСК ──────────────────────────────────────────────────────────
-
-def _find_command(query):
-    """Возвращает (cmd, score 0-100)."""
-    # Точное совпадение — всегда
-    if query in LOCAL_COMMANDS:
-        return LOCAL_COMMANDS[query], 100
-
-    # Для коротких запросов (1-2 слова) — только точное, без частичного
-    if len(query.split()) <= 2:
-        return None, 0
-
-    # Частичное: фраза из словаря содержится в запросе или наоборот (3+ слов)
-    best_cmd, best_score = None, 0
-    for phrase, cmd in LOCAL_COMMANDS.items():
-        if phrase in query:
-            # Чем длиннее совпавшая фраза — тем лучше
-            score = int(len(phrase) / len(query) * 100)
-            if score > best_score:
-                best_cmd, best_score = cmd, score
-        elif query in phrase:
-            score = int(len(query) / len(phrase) * 85)
-            if score > best_score:
-                best_cmd, best_score = cmd, score
-
-    return (best_cmd, best_score) if best_cmd else (None, 0)
-
-
-# ─── EXECUTE ─────────────────────────────────────────────────────────────────
-
-_CACHE_RESPONSES = {
-    "volume_max":"vol_max",    "volume_min":"vol_min",
-    "sound_off":"sound_off",   "sound_on":"sound_on",
-    "screenshot":"screenshot",
-    "clipboard_copy":"copied", "clipboard_paste":"pasted",
-    "clipboard_clear":"buf_cleared",
-    "switch_window":"win_switch",
-    "window_minimize":"win_min","window_maximize":"win_max",
-    "window_close":"win_close",
-    "stop_music":"music_stopped",
-    "music_next":"music_next", "music_prev":"music_prev",
-    "music_pause":"music_pause","music_resume":"music_resume",
-    "wifi_toggle_on":"wifi_on","wifi_toggle_off":"wifi_off","wifi_toggle":"wifi_on",
-    "stop_alarm":"stop_alarm",
-    "break_reminder_on":"breaks_on","break_reminder_off":"breaks_off",
-    "shutdown":"shutdown","restart":"restart",
-    "sleep":"sleep","cancel_shutdown":"cancel_shutdown",
-    "lock_screen":"locked","dark_mode":"dark_mode",
-    "open_settings":"settings_open",
-    "mode_night":"mode_night","mode_morning":"mode_morning","mode_presentation":"mode_pres",
-    "clear_tasks":"tasks_cleared",
-}
-
-
-def _ask_groq_short(prompt):
-    """Короткий запрос к Groq, возвращает строку ответа."""
-    if not AI_ENABLED:
-        return "ИИ недоступен."
     try:
-        resp = _groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=300,
-            temperature=0.9,
+        # Night Light Windows
+        subprocess.run([
+            "powershell", "-Command",
+            "Set-ItemProperty -Path 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion"
+            "\\Notifications\\Settings' -Name 'NOC_GLOBAL_SETTING_TOASTS_ENABLED' -Value 0 -Force"
+        ], check=False, capture_output=True)
+    except Exception:
+        pass
+    return "Ночной режим. Яркость снижена, уведомления отключены."
+
+
+def mode_presentation() -> str:
+    brightness_up(); brightness_up()
+    try:
+        subprocess.Popen(
+            APP_PATHS.get("powerpoint", ""),
+            shell=True
         )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        return f"Ошибка: {e}"
+    except Exception:
+        pass
+    time.sleep(0.5)
+    open_app("телеграм")
+    time.sleep(0.5)
+    open_folder("загрузки")
+    time.sleep(0.5)
+    webbrowser.open("https://gamma.app")
+    # Отключить уведомления
+    try:
+        subprocess.run([
+            "powershell", "-Command",
+            "Set-ItemProperty -Path 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion"
+            "\\Notifications\\Settings' -Name 'NOC_GLOBAL_SETTING_TOASTS_ENABLED' -Value 0 -Force"
+        ], check=False, capture_output=True)
+    except Exception:
+        pass
+    return "Режим презентации. PowerPoint, Телеграм, загрузки и Gamma открыты."
 
 
-def holiday():
-    today = datetime.now()
-    prompt = (
-        f"Сегодня {today.day} {today.strftime('%B')} {today.year} года. "
-        "Перечисли 3–5 праздников, которые отмечаются именно сегодня — международные, "
-        "профессиональные, народные, необычные. Отвечай по-русски, кратко, "
-        "без вступлений — сразу список через запятую или точку с запятой."
-    )
-    return _ask_groq_short(prompt)
+def mode_morning() -> str:
+    brightness_up(); brightness_up(); brightness_up()
+    open_app("хром")
+    time.sleep(0.5)
+    open_app("телеграм")
+    mo = ["января","февраля","марта","апреля","мая","июня",
+          "июля","августа","сентября","октября","ноября","декабря"]
+    n  = datetime.now()
+    wd = ["понедельник","вторник","среда","четверг","пятница","суббота","воскресенье"][n.weekday()]
+    return f"Доброе утро! Сейчас {n.strftime('%H:%M')}, {wd} {n.day} {mo[n.month-1]}. Хром и Телеграм открыты."
 
 
-def fact_of_day():
-    today = datetime.now()
-    prompt = (
-        f"Сегодня {today.day} {today.strftime('%B')}. "
-        "Расскажи один удивительный, малоизвестный факт — о науке, истории, природе или технологиях. "
-        "2–3 предложения, по-русски, без вступлений."
-    )
-    return _ask_groq_short(prompt)
+def _first_greeting() -> str:
+    mo = ["января","февраля","марта","апреля","мая","июня",
+          "июля","августа","сентября","октября","ноября","декабря"]
+    n  = datetime.now()
+    wd = ["понедельник","вторник","среда","четверг","пятница","суббота","воскресенье"][n.weekday()]
+    h  = n.hour
+    if h < 6:   gr = "Доброй ночи"
+    elif h < 12: gr = "Доброе утро"
+    elif h < 18: gr = "Добрый день"
+    else:        gr = "Добрый вечер"
+    return f"{gr}! Сейчас {n.strftime('%H:%M')}, {wd} {n.day} {mo[n.month-1]}. Чем могу помочь?"
 
 
-def tell_joke():
-    prompt = (
-        "Расскажи короткий анекдот или шутку для подростков 16-18 лет. "
-        "Современный, про школу, игры, интернет, учёбу или жизнь. "
-        "Без пошлости, без бородатых советских анекдотов. "
-        "Только сам анекдот, без вступлений."
-    )
-    return _ask_groq_short(prompt)
-
-
-def daily_tip():
-    today = datetime.now()
-    prompt = (
-        f"Дай один практичный совет на сегодня ({today.strftime('%A, %d %B')}). "
-        "Это может быть совет по продуктивности, здоровью, общению или настроению. "
-        "1–2 предложения, по-русски, без вступлений."
-    )
-    return _ask_groq_short(prompt)
-
-
-def coin_flip():
-    _play_sfx("coin")
-    key = random.choice(["coin_heads", "coin_tails"])
-    return key
-
-
-def execute_command(cmd, query=""):
-    global is_muted
-
+def execute_command(cmd: str, query: str = "") -> str | None:
     if cmd.startswith("open_folder:"): return open_folder(cmd.split(":",1)[1])
     if cmd.startswith("open_app:"):    return open_app(cmd.split(":",1)[1])
-    if cmd.startswith("close_app:"):   return close_app(cmd.split(":",1)[1])
-    if cmd == "ping":   play_random("ping"); return "_done_"
-    if cmd == "mute":   is_muted = True; stop_speech(); return "_mute_"
-    if cmd == "unmute": is_muted = False; return "unmuted"
-    if cmd == "ocr_copy":      return ocr_copy()
-    if cmd == "ocr_translate": return ocr_translate()
-
+    if cmd == "ping":   return random.choice(["Да?", "Я здесь.", "Слушаю."])
+    if cmd == "mute":
+        global is_muted; is_muted = True; stop_speech(); return ""
+    if cmd == "unmute":
+        is_muted = False; return "Снова слушаю."
     if cmd == "set_timer":
         secs = SlotExtractor.time_to_seconds(query)
         return set_timer(secs) if secs else "На сколько таймер?"
@@ -1222,263 +1107,168 @@ def execute_command(cmd, query=""):
         if len(nums) >= 2: return set_alarm(int(nums[0]), int(nums[1]))
         if len(nums) == 1: return set_alarm(int(nums[0]), 0)
         return None
-    if cmd == "calculate": return calculate(query)
+    if cmd == "calculate":  return calculate(query)
     if cmd == "remind_me":
         secs = SlotExtractor.time_to_seconds(query)
         return remind_me(secs//60 if secs else 5, query)
 
-    str_cmds = {
-        "volume_up":volume_up, "volume_down":volume_down,
-        "brightness_up":brightness_up, "brightness_down":brightness_down,
-        "clipboard_read":clipboard_read,
-        "get_battery":get_battery, "get_cpu":get_cpu,
-        "get_ip":get_ip, "disk_space":disk_space,
-        "top_processes":top_processes, "speedtest":speedtest,
-        "get_time":get_time, "get_date":get_date,
-        "get_weather":get_weather, "translate":translate,
-        "play_music":play_music,
-        "create_task":create_task, "show_tasks":show_tasks, "clear_tasks":clear_tasks,
-        "music_next":music_next, "music_prev":music_prev,
-        "music_pause":music_pause, "music_resume":music_resume,
-        "stop_music":stop_music,
-        "open_browser":open_browser, "open_folder":open_folder,
-        "find_file":find_file, "dictate":dictate,
-        "holiday":holiday, "fact_of_day":fact_of_day,
-        "tell_joke":tell_joke, "daily_tip":daily_tip,
-        "coin_flip":coin_flip,
-    }
-    if cmd in str_cmds:
-        return str_cmds[cmd]()
-
-    void_cmds = {
-        "volume_max":volume_max, "volume_min":volume_min,
-        "sound_off":sound_off, "sound_on":sound_on,
-        "screenshot":screenshot,
-        "clipboard_copy":clipboard_copy, "clipboard_paste":clipboard_paste,
-        "clipboard_clear":clipboard_clear,
-        "switch_window":switch_window,
-        "window_minimize":window_minimize, "window_maximize":window_maximize,
-        "window_close":window_close,
-
-        "wifi_toggle":wifi_toggle, "wifi_toggle_on":wifi_toggle_on,
-        "wifi_toggle_off":wifi_toggle_off,
-        "shutdown":shutdown, "restart":restart,
-        "sleep":sleep_pc, "cancel_shutdown":cancel_shutdown,
-        "stop_alarm":stop_alarm,
-        "break_reminder_on":break_reminder_on, "break_reminder_off":break_reminder_off,
-
-        "lock_screen":lock_screen, "dark_mode":dark_mode,
-        "open_settings":open_settings,
-        "mode_night":mode_night, "mode_morning":mode_morning,
-        "mode_presentation":mode_presentation,
-        "restart_script":restart_script,
+    dispatch = {
+        "get_time":get_time,"get_date":get_date,
+        "volume_up":volume_up,"volume_down":volume_down,
+        "volume_max":volume_max,"volume_min":volume_min,
+        "sound_off":sound_off,"sound_on":sound_on,
+        "brightness_up":brightness_up,"brightness_down":brightness_down,
+        "wifi_toggle":wifi_toggle,"wifi_toggle_on":wifi_toggle_on,"wifi_toggle_off":wifi_toggle_off,
+        "screenshot":screenshot,"clipboard_copy":clipboard_copy,
+        "clipboard_paste":clipboard_paste,"clipboard_read":clipboard_read,
+        "switch_window":switch_window,"window_minimize":window_minimize,
+        "window_maximize":window_maximize,"window_close":window_close,
+        "get_battery":get_battery,"get_cpu":get_cpu,
+        "get_weather":get_weather,"play_music":play_music,"stop_music":stop_music,
+        "create_task":create_task,"show_tasks":show_tasks,"clear_tasks":clear_tasks,
+        "open_browser":open_browser,"close_browser":close_browser,
+        "find_file":find_file,"open_folder":open_folder,"dictate":dictate,
+        "shutdown":shutdown,"restart":restart,"sleep":sleep_pc,
+        "cancel_shutdown":cancel_shutdown,"stop_alarm":stop_alarm,
+        "break_reminder_on":break_reminder_on,"break_reminder_off":break_reminder_off,
         "break_code":break_code,
+        "mode_night":mode_night,
+        "mode_presentation":mode_presentation,
+        "mode_morning":mode_morning,
     }
-    fn = void_cmds.get(cmd)
-    if fn:
-        fn()
-        return _CACHE_RESPONSES.get(cmd)
-    return None
+    fn = dispatch.get(cmd)
+    return fn() if fn else None
 
 
-def _respond(result):
-    if result is None or result in ("_done_", "_mute_"):
-        return
-    if isinstance(result, str) and result in _cache:
-        play(result)
-    elif isinstance(result, str):
-        speak(result)
-
-
-# ─── ОБРАБОТЧИК КОМАНДЫ ───────────────────────────────────────────────────────
-
-def _process(query):
-    global is_muted
-    query = query.lower().strip()
-
-    # wake word в окне активности — реагируем как на обычное обращение и выходим
-    if any(w in query for w in ("эй лора", "лора", "hey lora")):
-        play_random("wake")
-        return
-
-    # "стоп" во время речи — только прерываем, не выходим
-    if is_speaking:
-        stop_speech()
-        if query == "стоп":
-            return
-
-    # ── ФИКС: печатаем фразу ДО проверки стоп-триггеров ──
-    print(f"  \033[1myou   {query}\033[0m")
-
-    if any(w in query for w in STOP_TRIGGERS):
-        break_code()
-
-    if any(w in query for w in UNMUTE_TRIGGERS):
-        if is_muted:
-            is_muted = False
-            play("unmuted")
-        return
-
-    if any(w in query for w in MUTE_TRIGGERS):
-        is_muted = True
-        stop_speech()
-        print()
-        print("  ┌─────────────────────────────────┐")
-        print("  │  МУТ — Лора молчит              │")
-        print("  │  Чтобы разбудить, скажи:        │")
-        print("  │  'размут'  'включись'  'слушай' │")
-        print("  │  'продолжай'  'проснись'        │")
-        print("  └─────────────────────────────────┘")
-        print()
-        return
-
-    if is_muted: return
-
-    cmd, score = _find_command(query)
-    print(f"  \033[3mconf  {score}%  →  {cmd}\033[0m")
-
-    # Зона 1: уверенно → выполняем сразу
-    if score >= CONFIDENCE_EXECUTE and cmd:
-        result = execute_command(cmd, query)
-        _respond(result)
-        return
-
-    # Зона 2: сомнение → переспрашиваем
-    if CONFIDENCE_ASK <= score < CONFIDENCE_EXECUTE and cmd:
-        cmd_name = CMD_NAMES.get(cmd, cmd)
-        if cmd.startswith("open_app:"):
-            app = cmd.split(":",1)[1]
-            cmd_name = f"открыть {APP_NAMES_RU.get(app, app)}"
-        elif cmd.startswith("open_folder:"):
-            cmd_name = f"открыть папку {cmd.split(':',1)[1]}"
-
-        speak(f"Ты имеешь в виду «{cmd_name}»?")
-        confirm = _vosk_listener.listen(timeout=5) if _vosk_listener else None
-        print(f"  \033[1myou   {confirm or '—'}\033[0m")
-
-        if confirm and any(w in confirm.lower() for w in
-                           ("да", "верно", "точно", "именно", "ага", "угу", "конечно")):
-            play("confirm_yes")
-            result = execute_command(cmd, query)
-            _respond(result)
-        else:
-            play("confirm_no")
-        return
-
-    # Зона 3: не понял → ИИ или unclear
-    if AI_ENABLED and _vosk_listener:
-        free_text  = _vosk_listener.listen_free(timeout=5)
-        full_query = (query + " " + free_text).strip() if free_text else query
-        ai_reply   = ask_ai(full_query)
-        if ai_reply: speak(ai_reply)
-        else: play_random("unclear")
-    else:
-        play_random("unclear")
-
-
-# ─── MAIN ─────────────────────────────────────────────────────────────────────
-
-_exit_event = threading.Event()
-_cancel_event = threading.Event()  # Escape отменяет выключение/сон/перезагрузку
-
-def _keyboard_watcher():
-    """Отдельный поток: Escape прерывает речь, отменяет выключение или завершает программу."""
-    def on_key(e):
-        if e.name == "esc":
-            if _cancel_event.is_set():
-                # Идёт обратный отсчёт выключения/сна/перезагрузки — отменяем
-                _cancel_event.clear()
-                os.system("shutdown /a")
-                print("  [kbd] выключение отменено")
-                speak("Отменила.")
-            elif is_speaking:
-                stop_speech()
-                print("  [kbd] речь прервана")
-            else:
-                print("  [kbd] завершение...")
-                _exit_event.set()
-    keyboard.on_press(on_key)
-    _exit_event.wait()
-    keyboard.unhook_all()
-
+# ─── MAIN ────────────────────────────────────────────────────────────────────
 
 def main():
-    global listen_fn, _vosk_listener, is_muted
+    global listen_fn, is_muted
 
     os.makedirs("music", exist_ok=True)
     os.makedirs("sounds", exist_ok=True)
     if not os.path.exists("список дел.txt"):
-        open("список дел.txt", "w", encoding="utf-8").close()
+        open("список дел.txt","w",encoding="utf-8").close()
 
     _generate_cache()
+    _init_silero()
     _vol_init()
 
-    if not PICOVOICE_KEY:
-        print("  [!] Добавь PICOVOICE_KEY в .env"); exit(1)
-    if not os.path.exists(PPN_PATH):
-        print(f"  [!] Файл не найден: {PPN_PATH}"); exit(1)
-
     vosk_listener  = VoskListener(list(LOCAL_COMMANDS.keys()))
-    _vosk_listener = vosk_listener
     listen_fn      = lambda timeout=8: vosk_listener.listen(timeout)
+    global _vosk_listener
+    _vosk_listener = vosk_listener
 
-    porcupine = pvporcupine.create(
-        access_key=PICOVOICE_KEY,
-        keyword_paths=[PPN_PATH],
-        sensitivities=[WAKE_SENSITIVITY]
-    )
-    recorder = PvRecorder(device_index=-1, frame_length=porcupine.frame_length)
-    recorder.start()
+    _wake_event = threading.Event()
+    def _on_wake():
+        _wake_event.set()
 
-    play("ready")
-    print("\n  Говори 'Эй Лора'  |  Escape — прервать речь или выйти\n")
+    detector = WakeWordDetector(callback=_on_wake)
+    detector.start()
 
-    kbd_thread = threading.Thread(target=_keyboard_watcher, daemon=True)
-    kbd_thread.start()
+    play_cached("ready")
+    print("\n  Говори 'Эй Лора'  |  Escape — выйти\n")
+
+    def _process(query: str):
+        global is_muted
+        if is_speaking: stop_speech()
+        query = query.lower().strip()
+
+        if any(w in query for w in STOP_TRIGGERS):
+            break_code()
+
+        if "лора" in query or "lora" in query:
+            reply = random.choice(["Да?", "Я здесь.", "Слушаю."])
+            speak(reply); return
+
+        if any(w in query for w in UNMUTE_TRIGGERS):
+            if is_muted:
+                is_muted = False
+                speak(random.choice(["Снова слушаю.", "Да?", "Я здесь."]))
+            return
+
+        if any(w in query for w in MUTE_TRIGGERS):
+            is_muted = True; stop_speech(); return
+
+        if is_muted: return
+
+        cmd = LOCAL_COMMANDS.get(query)
+
+        if not cmd:
+            try:
+                from rapidfuzz import process, fuzz
+                match = process.extractOne(
+                    query, LOCAL_COMMANDS.keys(),
+                    scorer=fuzz.token_set_ratio, score_cutoff=72,
+                )
+                if match:
+                    cmd = LOCAL_COMMANDS[match[0]]
+            except ImportError:
+                pass
+
+        if not cmd:
+            for phrase, c in LOCAL_COMMANDS.items():
+                if phrase in query or query in phrase:
+                    cmd = c; break
+
+        if cmd:
+            result = execute_command(cmd, query)
+            if result is None:
+                play_unclear()
+            elif result == "":
+                pass
+            else:
+                speak(result)
+        else:
+            if AI_ENABLED and _vosk_listener:
+                free_text  = _vosk_listener.listen_free(timeout=5)
+                full_query = (query + " " + free_text).strip() if free_text else query
+                ai_reply   = ask_ai(full_query)
+                if ai_reply: speak(ai_reply)
+                else: play_unclear()
+            else:
+                play_unclear()
 
     try:
-        while not _exit_event.is_set():
-            pcm = recorder.read()
-            if porcupine.process(pcm) >= 0:
-                recorder.stop()
-                print("  \033[1myou   эй лора\033[0m")
-                if is_muted:
-                    is_muted = False
-                play_random("wake")
-                last_active = time.time()
+        while True:
+            triggered = _wake_event.wait(timeout=0.1)
+            if not triggered:
+                continue
+            _wake_event.clear()
 
-                time.sleep(0.2)
-                cmd_text = vosk_listener.listen(timeout=6)
-                recorder.start()
+            global is_muted
+            _log_you("эй лора")
+            if is_muted:
+                is_muted = False
+            play_wake()
+            last_active = time.time()
 
-                if not cmd_text:
-                    continue
+            time.sleep(0.2)
+            cmd_text = vosk_listener.listen(timeout=6)
 
-                _process(cmd_text)
-                last_active = time.time()
+            if not cmd_text:
+                continue
 
-                # Если после команды вошли в мут — слушаем размут без wake word
-                while is_muted:
-                    mute_text = vosk_listener.listen(timeout=5)
-                    if mute_text:
-                        _process(mute_text)
+            _log_you(cmd_text)
+            _process(cmd_text)
+            last_active = time.time()
 
-                deadline = time.time() + WINDOW_AFTER_AI
-                while time.time() < deadline and not _exit_event.is_set():
-                    followup = vosk_listener.listen(timeout=1)
-                    if followup:
-                        last_active = time.time()
-                        deadline = last_active + WINDOW_AFTER_AI
-                        _process(followup)
+            while is_muted:
+                mute_text = vosk_listener.listen(timeout=5)
+                if mute_text:
+                    _process(mute_text)
 
+            while (time.time() - last_active) < WINDOW_AFTER_AI:
+                followup = vosk_listener.listen(timeout=2)
+                if followup:
+                    last_active = time.time()
+                    _log_you(followup)
+                    _process(followup)
 
     except KeyboardInterrupt:
         print("\n  Завершение...")
-        _exit_event.set()
     finally:
-        recorder.stop()
-        recorder.delete()
-        porcupine.delete()
+        detector.stop()
 
 
 if __name__ == "__main__":
