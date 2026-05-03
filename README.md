@@ -3,11 +3,11 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
 ![Groq](https://img.shields.io/badge/LLM-Groq%20LLaMA%203.3-orange?logo=meta&logoColor=white)
 ![TTS](https://img.shields.io/badge/TTS-edge--tts%20Microsoft-blueviolet?logo=microsoft)
-![STT](https://img.shields.io/badge/STT-Google%20Speech-green?logo=google)
+![STT](https://img.shields.io/badge/STT-Vosk%20офлайн-green)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey?logo=windows)
 ![License](https://img.shields.io/badge/License-MIT-brightgreen)
 
-Голосовой ассистент с именем **Лора** — реагирует на своё имя, понимает естественную речь, выполняет команды и отвечает как живой собеседник. Проект полностью на русском языке.
+Голосовой ассистент **Лора** — реагирует на wake word «Эй Лора», распознаёт команды офлайн через Vosk, отвечает через кешированный TTS без задержки. При неизвестной фразе отвечает через LLaMA 3.3 (Groq).
 
 ---
 
@@ -15,16 +15,16 @@
 
 | Категория | Что умеет |
 |---|---|
-| 🧠 **ИИ** | Ответы через LLaMA 3.3 70B (Groq API), понимает контекст |
-| 🎤 **Голос** | Распознавание речи через Google Speech Recognition |
-| 🔊 **Речь** | Синтез через Microsoft edge-tts (`SvetlanaNeural`) |
-| 💻 **Система** | Открыть/закрыть приложения, скриншот, громкость, сон, перезагрузка |
-| 🌐 **Браузер** | Открыть сайт или поиск Google голосом |
-| 📋 **Задачи** | Добавить, прочитать, очистить список дел |
-| ⏱️ **Таймер** | Установить таймер голосом |
-| 🎵 **Музыка** | Воспроизведение из локальной папки |
-| 🌍 **Перевод** | Перевод фраз на английский |
-| 🔇 **Мут** | Голосом заглушить/разбудить ассистента |
+| 🎤 **Wake word** | Реагирует на «Эй Лора» через Vosk с узкой грамматикой |
+| 🧠 **ИИ** | Свободные вопросы через LLaMA 3.3 70B (Groq API) |
+| 🔊 **TTS** | edge-tts Microsoft Neural, все ответы кешированы — нет задержки |
+| 💻 **Система** | Громкость, яркость, скриншот, WiFi, питание |
+| 📱 **Приложения** | Открыть/закрыть Telegram, Discord, Chrome, VS Code и др. |
+| 📁 **Папки** | Открыть загрузки, документы, рабочий стол |
+| 📋 **Задачи** | Добавить, показать, очистить список дел |
+| 🌍 **Погода** | Текущая погода по городу (OpenWeatherMap) |
+| 🌙 **Режимы** | Ночной, презентация, утренний — запускают набор действий |
+| 🔇 **Мут** | Голосом заглушить и разбудить ассистента |
 
 ---
 
@@ -32,8 +32,8 @@
 
 ### 1. Клонировать репозиторий
 ```bash
-git clone https://github.com/ВАШ_НИК/laura-assistant.git
-cd laura-assistant
+git clone https://github.com/Petrbrok/PythonProject.git
+cd PythonProject
 ```
 
 ### 2. Установить зависимости
@@ -41,42 +41,42 @@ cd laura-assistant
 pip install -r requirements.txt
 ```
 
-### 3. Настроить переменные окружения
-```bash
-cp .env.example .env
-# Открой .env и вставь свои ключи
+### 3. Скачать модель Vosk
+Скачать [vosk-model-small-ru-0.22](https://alphacephei.com/vosk/models), распаковать и переименовать папку в `model` рядом с `project1.py`.
+
+### 4. Настроить .env
+```env
+GROQ_API_KEY=твой_ключ        # console.groq.com — бесплатно
+WEATHER_API_KEY=твой_ключ     # openweathermap.org — опционально
+EDGE_VOICE=ru-RU-SvetlanaNeural
 ```
 
-### 4. Запустить
+### 5. Запустить
 ```bash
 python project1.py
 ```
 
-Скажите **«Лора»** — и ассистент готов к работе.
+Скажи **«Эй Лора»** — ассистент готов к работе.
 
 ---
 
-## 🔑 Получение API ключей
-
-| Сервис | Где получить | Бесплатный тариф |
-|---|---|---|
-| **Groq API** | [console.groq.com](https://console.groq.com) | ✅ Да |
-| **edge-tts** | Встроен, ключи не нужны | ✅ Бесплатно |
-
----
-
-## 📁 Структура проекта
+## 🏗️ Архитектура
 
 ```
-laura-assistant/
-├── project1.py          # Основной файл ассистента
-├── requirements.txt     # Зависимости
-├── .env.example         # Шаблон переменных окружения
-├── .env                 # Твои ключи (не коммитить!)
-├── .gitignore
-├── music/               # Папка с музыкой (mp3/wav)
-├── sounds/              # Звуки подтверждения команд
-└── список дел.txt       # Автосоздаётся при запуске
+Микрофон
+   │
+   ├─► WakeWordListener (Vosk, грамматика ["эй лора"])
+   │         │ wake word обнаружен
+   │         ▼
+   └─► VoskListener (свободная речь)
+             │
+             ├─► Точное совпадение с LOCAL_COMMANDS
+             ├─► Rapidfuzz (нечёткое совпадение, порог 80%)
+             ├─► Частичное совпадение (3+ слова)
+             └─► Groq LLaMA 3.3 (если команда не найдена)
+                       │
+                       ▼
+              TTS кеш (edge-tts mp3) → pygame
 ```
 
 ---
@@ -84,46 +84,60 @@ laura-assistant/
 ## 🗣️ Примеры команд
 
 ```
-"Лора, который час?"
-"Лора, открой телеграм"
-"Лора, сделай скриншот"
-"Лора, поставь таймер на 5 минут"
-"Лора, добавь задачу купить продукты"
-"Лора, переведи фразу"
-"Лора, открой ютуб"
-"Лора, выключи компьютер"
-"Лора, замолчи"           → мут
-"Проснись"                → размут
+"Эй Лора, который час"
+"Эй Лора, открой телеграм"
+"Эй Лора, сделай скриншот"
+"Эй Лора, ночной режим"
+"Эй Лора, режим презентации"
+"Эй Лора, добавь задачу купить продукты"
+"Эй Лора, погода в Москве"
+"Эй Лора, список команд"       → таблица в консоли
+"Эй Лора, замолчи"             → отключение ответов
+"размут" / "слушай"            → повторное включение ответов
 ```
 
 ---
 
-## ⚙️ Настройка голоса
+## 📁 Структура проекта
 
-В файле `.env` можно изменить голос TTS:
-
-```env
-# Женский (по умолчанию)
-EDGE_VOICE=ru-RU-SvetlanaNeural
-
-# Мужской
-EDGE_VOICE=ru-RU-DmitryNeural
 ```
-
-Все доступные голоса: `edge-tts --list-voices`
+PythonProject/
+├── project1.py          # Основной файл
+├── commands.yaml        # Кастомные фразы (не трогая код)
+├── requirements.txt     # Зависимости
+├── .env                 # API ключи (не коммитить)
+├── model/               # Модель Vosk (скачать отдельно)
+├── sounds/              # Кеш TTS (генерируется автоматически)
+│   ├── cache/           # Системные фразы
+│   ├── wake/            # Wake-ответы
+│   └── resp/            # Ответы команд
+├── music/               # Музыка для воспроизведения
+└── список дел.txt       # Создаётся автоматически
+```
 
 ---
 
-## 🛠️ Стек технологий
+## 🔑 API ключи
 
-- **[Groq](https://groq.com/)** — сверхбыстрый инференс LLaMA 3.3 70B
-- **[edge-tts](https://github.com/rany2/edge-tts)** — синтез речи Microsoft Neural TTS
-- **[SpeechRecognition](https://github.com/Uberi/speech_recognition)** — обёртка над Google STT
+| Сервис | Где получить | Бесплатно |
+|---|---|---|
+| **Groq** | [console.groq.com](https://console.groq.com) | ✅ |
+| **OpenWeatherMap** | [openweathermap.org](https://openweathermap.org/api) | ✅ |
+| **edge-tts** | Не нужен | ✅ |
+
+---
+
+## 🛠️ Стек
+
+- **[Vosk](https://alphacephei.com/vosk/)** — офлайн STT, русская модель
+- **[Groq](https://groq.com/)** — быстрый инференс LLaMA 3.3 70B
+- **[edge-tts](https://github.com/rany2/edge-tts)** — Microsoft Neural TTS
+- **[rapidfuzz](https://github.com/maxbachmann/RapidFuzz)** — нечёткое сопоставление команд
 - **[pygame](https://www.pygame.org/)** — воспроизведение аудио
-- **[python-dotenv](https://github.com/theskumar/python-dotenv)** — управление переменными окружения
+- **[sounddevice](https://python-sounddevice.readthedocs.io/)** — захват микрофона
 
 ---
 
 ## 📄 Лицензия
 
-MIT — используй, форкай, улучшай.
+MIT
