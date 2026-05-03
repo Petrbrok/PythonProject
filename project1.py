@@ -205,6 +205,8 @@ LOCAL_COMMANDS = {
     "ночной режим":"mode_night","включи ночной режим":"mode_night",
     "режим презентации":"mode_presentation","презентация":"mode_presentation",
     "утренний режим":"mode_morning","доброе утро":"mode_morning",
+    "список команд":"show_commands","покажи команды":"show_commands",
+    "что ты умеешь":"show_commands","помощь":"show_commands",
     "замолчи":"mute","молчи":"mute","мут":"mute",
     "лора":"ping",
     "размут":"unmute","включись":"unmute","слушай":"unmute","продолжай":"unmute",
@@ -471,8 +473,8 @@ def _log_lora(text: str, ms: int = None):
 # ─── ИИ ─────────────────────────────────────────────────────────────────────
 
 AI_SYSTEM_PROMPT = (
-    "Тебя зовут Лора — голосовой ассистент. Общаешься как друг — просто, с лёгким юмором. "
-    "Отвечай на русском. Простой вопрос — 1 предложение. Только текст."
+    "Тебя зовут Лора — голосовой ассистент. Отвечай по-русски, кратко и дружелюбно. "
+    "Без сленга и грубостей. Простой вопрос — 1 предложение. Только текст, без эмодзи."
 )
 
 def ask_ai(query: str) -> str:
@@ -856,6 +858,29 @@ def calculate(expression: str = "") -> str:
         return f"{expression} равно {result}."
     except Exception: return None
 
+def show_commands() -> str:
+    categories = {
+        "Время":        ["который час", "какая дата"],
+        "Громкость":    ["громче", "тише", "выключи звук", "включи звук"],
+        "Яркость":      ["ярче", "темнее"],
+        "Приложения":   ["открой хром", "открой телеграм", "открой ворд", "..."],
+        "Папки":        ["открой загрузки", "открой документы", "..."],
+        "Система":      ["скриншот", "батарея", "загрузка процессора"],
+        "WiFi":         ["включи вайфай", "выключи вайфай"],
+        "Задачи":       ["добавь задачу", "список задач", "очисти задачи"],
+        "Режимы":       ["ночной режим", "режим презентации", "утренний режим"],
+        "Питание":      ["выключи компьютер", "перезагрузи", "спящий режим"],
+        "ИИ":           ["любой вопрос свободным текстом"],
+    }
+    print("\n  ┌─────────────────────────────────────┐")
+    print("  │         КОМАНДЫ ЛОРЫ                │")
+    print("  ├─────────────────────────────────────┤")
+    for cat, cmds in categories.items():
+        print(f"  │  {cat:<12} {', '.join(cmds)[:24]:<24} │")
+    print("  └─────────────────────────────────────┘\n")
+    return "Список команд в консоли."
+
+
 def break_code():
     speak_resp("farewell") or speak("До встречи!")
     time.sleep(1); exit()
@@ -957,6 +982,7 @@ def execute_command(cmd: str, query: str = "") -> str | None:
         "break_reminder_on":break_reminder_on,"break_reminder_off":break_reminder_off,
         "mode_night":mode_night,"mode_presentation":mode_presentation,"mode_morning":mode_morning,
         "break_code":break_code,
+        "show_commands":show_commands,
         "remind_me":lambda: remind_me(5, "Напоминание"),
     }
     fn = dispatch.get(cmd)
