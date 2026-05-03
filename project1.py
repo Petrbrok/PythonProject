@@ -57,6 +57,7 @@ UNMUTE_TRIGGERS = (
 STOP_TRIGGERS = (
     "завершить работу", "заверши работу", "выключись", "завершись",
     "закройся", "выход", "пока", "до свидания", "отключись", "выключи себя",
+    "заверши код", "заверши кода", "завершить код", "закрой себя", "выключи лору",
 )
 
 CACHED_PHRASES = {
@@ -969,8 +970,31 @@ def _process(query: str, wake_listener=None):
 
     if any(w in query for w in STOP_TRIGGERS):
         break_code()
+    # Fuzzy для stop — "завершай код", "выключайся" и т.д.
+    try:
+        from rapidfuzz import fuzz
+        for trigger in STOP_TRIGGERS:
+            if fuzz.partial_ratio(trigger, query) >= 85:
+                break_code()
+    except ImportError:
+        pass
 
-    if "лора" in query and len(query.split()) <= 2:
+    # Ping — обращение к Лоре (точное или fuzzy: "лара", "лаура", "лёра" и т.д.)
+    _is_ping = False
+    if len(query.split()) <= 2:
+        if "лора" in query or "lora" in query:
+            _is_ping = True
+        else:
+            try:
+                from rapidfuzz import fuzz
+                for w in ["лора", "эй лора"]:
+                    if fuzz.ratio(query, w) >= 70:
+                        _is_ping = True
+                        break
+            except ImportError:
+                pass
+
+    if _is_ping:
         keys = [k for k in _resp_cache if k.startswith("ping_")]
         if keys:
             chosen = random.choice(keys)
