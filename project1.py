@@ -760,8 +760,10 @@ def get_weather() -> str:
                f"?q={urllib.parse.quote(city)}&appid={WEATHER_API_KEY}&units=metric&lang=ru")
         with urllib.request.urlopen(url, timeout=5) as r:
             d = json.loads(r.read().decode())
-        return (f"В {city}: {d['weather'][0]['description']}, "
-                f"{round(d['main']['temp'])}°, ощущается {round(d['main']['feels_like'])}°.")
+        desc  = d['weather'][0]['description']
+        temp  = round(d['main']['temp'])
+        feels = round(d['main']['feels_like'])
+        return f"{city.capitalize()}: {desc}, {temp}°, ощущается {feels}°."
     except Exception: return "Не удалось получить погоду."
 
 def create_task() -> str:
@@ -970,14 +972,6 @@ def _process(query: str, wake_listener=None):
 
     if any(w in query for w in STOP_TRIGGERS):
         break_code()
-    # Fuzzy для stop — "завершай код", "выключайся" и т.д.
-    try:
-        from rapidfuzz import fuzz
-        for trigger in STOP_TRIGGERS:
-            if fuzz.partial_ratio(trigger, query) >= 85:
-                break_code()
-    except ImportError:
-        pass
 
     # Ping — обращение к Лоре (точное или fuzzy: "лара", "лаура", "лёра" и т.д.)
     _is_ping = False
