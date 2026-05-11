@@ -141,6 +141,7 @@ sleep:
 
 cancel_shutdown:
   - не выключай
+  - отмена
 
 break_reminder_on:
   - напоминай о перерывах
